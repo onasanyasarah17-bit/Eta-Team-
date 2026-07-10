@@ -30,7 +30,7 @@ class Config:
     # AWS Configuration
     # boto3 will automatically detect IAM Role on EC2
     # No explicit credentials needed - they come from the IAM Role
-    AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
+    AWS_REGION: str = os.getenv("AWS_REGION", "eu-north-1")
 
     # DynamoDB Table
     DYNAMODB_TABLE_NAME: str = os.getenv("DYNAMODB_TABLE_NAME", "secure-employees")

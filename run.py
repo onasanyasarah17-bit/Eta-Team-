@@ -9,7 +9,7 @@ Usage:
 Environment variables:
     FLASK_ENV: development, production, testing (default: development)
     PORT: Port to run on (default: 5000)
-    AWS_REGION: AWS region (default: us-east-1)
+    AWS_REGION: AWS region (default: eu-north-1)
     DYNAMODB_TABLE_NAME: DynamoDB table (default: secure-employees)
     
 AWS Credentials:

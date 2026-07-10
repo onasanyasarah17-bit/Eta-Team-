@@ -32,7 +32,7 @@ class FakeDynamoDBService:
         return {
             "connected": self.connected,
             "table": "test-secure-employees",
-            "region": "us-east-1",
+            "region": "eu-north-1",
         }
 
 

@@ -40,7 +40,7 @@ class DynamoDBService:
         >>> emp = service.get_employee("EMP001")
     """
 
-    def __init__(self, table_name: str, region: str = "us-east-1"):
+    def __init__(self, table_name: str, region: str = "eu-north-1"):
         """
         Initialize DynamoDB service.
 

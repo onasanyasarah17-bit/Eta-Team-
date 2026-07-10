@@ -40,7 +40,7 @@ class FakeTable:
 
 
 def make_service_with_table(table):
-    service = DynamoDBService(table_name="secure-employees", region="us-east-1")
+    service = DynamoDBService(table_name="secure-employees", region="eu-north-1")
     service._table = table
     return service
 

@@ -49,6 +49,7 @@ IAM-least-previlege-backend/
 ## DynamoDB Contract
 
 Table name defaults to `secure-employees`.
+Region defaults to `eu-north-1` (must match the team DynamoDB table).
 
 Required schema:
 
@@ -77,7 +78,7 @@ FLASK_ENV=development
 SECRET_KEY=your-secret-key-here-change-in-production
 PORT=5000
 HOST=0.0.0.0
-AWS_REGION=us-east-1
+AWS_REGION=eu-north-1
 DYNAMODB_TABLE_NAME=secure-employees
 LOG_LEVEL=INFO
 ```
@@ -144,7 +145,7 @@ Run:
 docker run --rm -p 5000:5000 \
   -e FLASK_ENV=production \
   -e SECRET_KEY=change-me \
-  -e AWS_REGION=us-east-1 \
+  -e AWS_REGION=eu-north-1 \
   -e DYNAMODB_TABLE_NAME=secure-employees \
   secure-employee-directory
 ```

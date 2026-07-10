@@ -16,7 +16,7 @@ Example response:
   "database": "connected",
   "authentication": "IAM Role",
   "table": "secure-employees",
-  "region": "us-east-1",
+  "region": "eu-north-1",
   "error": null
 }
 ```

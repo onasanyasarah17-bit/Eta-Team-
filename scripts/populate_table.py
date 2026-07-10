@@ -47,7 +47,7 @@ def main() -> None:
     load_dotenv()
 
     table_name = os.getenv("DYNAMODB_TABLE_NAME", "secure-employees")
-    region = os.getenv("AWS_REGION", "us-east-1")
+    region = os.getenv("AWS_REGION", "eu-north-1")
 
     print(f"Using DynamoDB table: {table_name}")
     print(f"Using AWS region: {region}")
