@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+
+{% block title %}Employee Directory - Home{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Employee Directory</h1>
+    <p class="text-muted">Browse all employees in the company directory</p>
+</div>
+
+{% if error %}
+    <div class="alert alert-danger error-alert" role="alert">
+        <h4 class="alert-heading">Error</h4>
+        <p>{{ error }}</p>
+        <hr>
+        <small>
+            If this is an IAM role error, verify that:
+            <ul>
+                <li>EC2 instance has an IAM Role attached</li>
+                <li>IAM Role has DynamoDB read permissions</li>
+                <li>DynamoDB table exists and is named "{{ config.DYNAMODB_TABLE_NAME }}"</li>
+            </ul>
+        </small>
+    </div>
+{% elif employees %}
+    <div class="card">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th scope="col" style="width: 20%;">Name</th>
+                        <th scope="col" style="width: 20%;">Department</th>
+                        <th scope="col" style="width: 20%;">Role</th>
+                        <th scope="col" style="width: 20%;">Email</th>
+                        <th scope="col" style="width: 20%;">Office</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for employee in employees %}
+                    <tr>
+                        <td>
+                            <a href="/employee/{{ employee.employee_id }}" class="employee-link">
+                                {{ employee.name }}
+                            </a>
+                        </td>
+                        <td>{{ employee.department }}</td>
+                        <td>{{ employee.role }}</td>
+                        <td>
+                            <a href="mailto:{{ employee.email }}">{{ employee.email }}</a>
+                        </td>
+                        <td>{{ employee.office }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    
+    <div class="mt-3 text-muted">
+        <small>Total employees: <strong>{{ employees|length }}</strong></small>
+    </div>
+{% else %}
+    <div class="alert alert-info" role="alert">
+        <h4 class="alert-heading">No Employees</h4>
+        <p>No employees found in the directory. The DynamoDB table may be empty.</p>
+        <hr>
+        <small>To populate the table, run: <code>python scripts/populate_table.py</code></small>
+    </div>
+{% endif %}
+
+<!-- Info Card -->
+<div class="row mt-5">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">Security</h5>
+                <p class="card-text small">
+                    This application uses <strong>IAM Role authentication</strong>.
+                    AWS credentials are obtained automatically from the EC2 instance's attached IAM Role.
+                    No credentials are hardcoded or passed as environment variables.
+                </p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">Data Source</h5>
+                <p class="card-text small">
+                    Employee data is stored in <strong>DynamoDB</strong>.
+                    <br>
+                    Table: <code>{{ config.DYNAMODB_TABLE_NAME }}</code>
+                    <br>
+                    Region: <code>{{ config.AWS_REGION }}</code>
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

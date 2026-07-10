@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+
+{% block title %}{{ employee.name if employee else 'Employee Not Found' }} - Employee Directory{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div class="d-flex justify-content-between align-items-center">
+        <div>
+            <h1>Employee Profile</h1>
+            <p class="text-muted">Detailed information about the employee</p>
+        </div>
+        <a href="/" class="btn btn-outline-secondary">Back to Directory</a>
+    </div>
+</div>
+
+{% if error %}
+    <div class="alert alert-danger error-alert" role="alert">
+        <h4 class="alert-heading">Error</h4>
+        <p>{{ error }}</p>
+        <hr>
+        <small>
+            <strong>Troubleshooting:</strong>
+            <ul>
+                <li>Verify the employee ID is correct</li>
+                <li>Check IAM Role has DynamoDB read permissions</li>
+                <li>Ensure the DynamoDB table exists</li>
+            </ul>
+        </small>
+    </div>
+    <a href="/" class="btn btn-primary mt-3">Back to Directory</a>
+{% elif employee %}
+    <div class="row">
+        <!-- Main Info Card -->
+        <div class="col-lg-8">
+            <div class="card mb-4">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-start mb-4">
+                        <div>
+                            <h2 class="card-title mb-2">{{ employee.name }}</h2>
+                            <p class="text-muted mb-0">ID: <code>{{ employee.employee_id }}</code></p>
+                        </div>
+                        <span class="badge bg-info">Active</span>
+                    </div>
+                    
+                    <hr>
+                    
+                    <!-- Employee Details -->
+                    <div class="row mt-4">
+                        <div class="col-md-6">
+                            <div class="mb-4">
+                                <h6 class="text-muted text-uppercase fw-bold mb-2">Job Role</h6>
+                                <p class="fs-5">{{ employee.role }}</p>
+                            </div>
+                            
+                            <div class="mb-4">
+                                <h6 class="text-muted text-uppercase fw-bold mb-2">Department</h6>
+                                <p class="fs-5">{{ employee.department }}</p>
+                            </div>
+                        </div>
+                        
+                        <div class="col-md-6">
+                            <div class="mb-4">
+                                <h6 class="text-muted text-uppercase fw-bold mb-2">Office Location</h6>
+                                <p class="fs-5">
+                                    {{ employee.office }}
+                                </p>
+                            </div>
+                            
+                            <div class="mb-4">
+                                <h6 class="text-muted text-uppercase fw-bold mb-2">Email</h6>
+                                <p class="fs-5">
+                                    <a href="mailto:{{ employee.email }}">
+                                        {{ employee.email }}
+                                    </a>
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-4">
+            <div class="card mb-4">
+                <div class="card-body">
+                    <h5 class="card-title">Data Source</h5>
+                    <p class="card-text small">
+                        <strong>Table:</strong> <code>{{ config.DYNAMODB_TABLE_NAME }}</code>
+                        <br>
+                        <strong>Region:</strong> <code>{{ config.AWS_REGION }}</code>
+                        <br>
+                        <strong>Service:</strong> DynamoDB
+                    </p>
+                </div>
+            </div>
+
+            <div class="card mb-4">
+                <div class="card-body">
+                    <h5 class="card-title">Authentication</h5>
+                    <p class="card-text small">
+                        <strong>Method:</strong> IAM Role
+                        <br>
+                        <span class="badge bg-success">Secure</span>
+                        <br>
+                        <small class="text-muted d-block mt-2">
+                            No hardcoded credentials. AWS credentials obtained from EC2 IAM Role.
+                        </small>
+                    </p>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Actions</h5>
+                    <a href="/" class="btn btn-sm btn-primary w-100">
+                        Back to Directory
+                    </a>
+                    <a href="mailto:{{ employee.email }}" class="btn btn-sm btn-outline-secondary w-100 mt-2">
+                        Send Email
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+{% else %}
+    <div class="alert alert-warning" role="alert">
+        <h4 class="alert-heading">Employee Not Found</h4>
+        <p>The employee you're looking for doesn't exist in the directory.</p>
+    </div>
+    <a href="/" class="btn btn-primary">Back to Directory</a>
+{% endif %}
+{% endblock %}
