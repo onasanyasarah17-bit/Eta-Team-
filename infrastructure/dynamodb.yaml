@@ -1,0 +1,56 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  DynamoDB table for the Secure Employee Directory.
+  Partition key: employeeId (String).
+  IAM Role permissions are managed separately by the IAM team.
+
+Parameters:
+  TableName:
+    Type: String
+    Default: secure-employees
+    Description: Name of the DynamoDB employee table
+
+  Environment:
+    Type: String
+    Default: production
+    AllowedValues:
+      - development
+      - production
+    Description: Deployment environment tag
+
+Resources:
+  EmployeeTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref TableName
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      AttributeDefinitions:
+        - AttributeName: employeeId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: employeeId
+          KeyType: HASH
+      Tags:
+        - Key: Project
+          Value: secure-employee-directory
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+Outputs:
+  TableName:
+    Description: DynamoDB table name
+    Value: !Ref EmployeeTable
+    Export:
+      Name: !Sub "${AWS::StackName}-TableName"
+
+  TableArn:
+    Description: DynamoDB table ARN — provide this to the IAM team to scope the role policy
+    Value: !GetAtt EmployeeTable.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-TableArn"

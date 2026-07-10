@@ -1,55 +1,128 @@
 # DynamoDB - Secure Employee Directory
 
-![create_database_table](images/dynamodb-create-table.png)
+![create_database_table](images/dynamodb-cloudformation.png)
 
-## Table Details
+The DynamoDB table for this project is provisioned via CloudFormation using the
+template located at `infrastructure/dynamodb.yaml`. This document covers the
+template structure, deployment steps, outputs, and how to retrieve the table ARN
+for the IAM team.
 
-| Field         | Value                                                                        |
-|---------------|------------------------------------------------------------------------------|
-| Table Name    | `secure-employees`                                                           |
-| Region        | `eu-north-1`                                                                 |
-| Partition Key | `employeeId` (String)                                                        |
-| Billing Mode  | On-Demand (PAY_PER_REQUEST)                                                  |
-| ARN           | `arn:aws:dynamodb:eu-north-1:ACCOUNT_ID:table/secure-employees`         |
-| Status        | Active                                                                       |
+---
 
-> **Note:** The real ARN has been shared with the IAM team directly. `ACCOUNT_ID`
-> is omitted from this public document intentionally.
+## Template Location
 
-## How the Table Was Created
+```
+infrastructure/dynamodb.yaml
+```
 
-The table was provisioned via the AWS Management Console.
-The only attribute declared at creation time is the partition key - DynamoDB is
-schemaless, so the remaining attributes are written to the table automatically
-when `scripts/populate_table.py` runs.
+---
 
-Creation command for reference:
+## Parameters
+
+The template accepts two parameters at deploy time:
+
+| Parameter   | Default            | Allowed Values              | Description                        |
+|-------------|--------------------|-----------------------------|------------------------------------|
+| `TableName` | `secure-employees` | Any string                  | Name of the DynamoDB table         |
+| `Environment` | `production`     | `development`, `production` | Tags the table with the environment |
+
+Both parameters have defaults and hence you can deploy without overriding either unless
+you need a different table name or environment tag.
+
+---
+
+## Deployment
+
+### Prerequisites
+- AWS CLI installed and configured with sufficient permissions (Used cloudshell though by uploading the yaml file directly)
+- CloudFormation `CreateStack` and DynamoDB `CreateTable` permissions among other necessary permissions on the IAM user
+
+### Deploy the stack
+
+Via Cloudshell:
+- First, upload the dynamodb.yaml
+- Then:
 
 ```bash
-aws dynamodb create-table \
-  --table-name secure-employees \
-  --attribute-definitions AttributeName=employeeId,AttributeType=S \
-  --key-schema AttributeName=employeeId,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST \
+aws cloudformation deploy \
+  --template-file dynamodb.yaml \
+  --stack-name secure-employee-directory \
+  --parameter-overrides Environment=production \
   --region eu-north-1
 ```
 
-**Key schema notes:**
-- `AttributeType=S` - data type of `employeeId` is String
-- `KeyType=HASH` - `employeeId` is the partition key
+From the project root:
 
-## Item Schema
+```bash
+aws cloudformation deploy \
+  --template-file infrastructure/dynamodb.yaml \
+  --stack-name secure-employee-directory \
+  --parameter-overrides Environment=production \
+  --region eu-north-1
+```
 
-Each employee record contains the following attributes:
+To deploy a development instance with a different table name:
 
-| Attribute    | Type   | Description                            |
-|--------------|--------|----------------------------------------|
-| `employeeId` | String | Partition key                          |
-| `name`       | String | Employee full name                     |
-| `department` | String | Department name                        |
-| `role`       | String | Job title                              |
-| `email`      | String | Email address                          |
-| `office`     | String | Office location                        |
+```bash
+aws cloudformation deploy \
+  --template-file infrastructure/dynamodb.yaml \
+  --stack-name secure-employee-directory-dev \
+  --parameter-overrides TableName=secure-employees-dev Environment=development \
+  --region eu-north-1
+```
+
+### What gets created
+
+| Resource         | Type                  | Details                              |
+|------------------|-----------------------|--------------------------------------|
+| `EmployeeTable`  | `AWS::DynamoDB::Table`| Partition key: `employeeId` (String) |
+| Billing mode     | PAY_PER_REQUEST       | On-demand, no capacity planning needed |
+| Encryption       | SSE enabled           | AWS-managed key                      |
+| Point-in-time recovery | Enabled         | Protects against accidental deletion |
+
+
+---
+
+## Outputs
+
+After a successful deployment the stack exposes two outputs:
+
+| Output Key  | Description                                              |
+|-------------|----------------------------------------------------------|
+| `TableName` | The name of the created DynamoDB table                   |
+| `TableArn`  | The full ARN of the table — needed by the IAM team       |
+
+---
+
+## Retrieving the Table ARN
+
+Run the following command to retrieve the stack outputs after deployment:
+
+```bash
+aws cloudformation describe-stacks \
+  --stack-name secure-employee-directory \
+  --query "Stacks[0].Outputs" \
+  --output table \
+  --region eu-north-1
+```
+
+Output:
+
+```
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+|                                                                                           DescribeStacks                                                                                            |
++-----------------------------------------------------------------------------+--------------------------------------+------------+-------------------------------------------------------------------+
+|                                 Description                                 |             ExportName               | OutputKey  |                            OutputValue                            |
++-----------------------------------------------------------------------------+--------------------------------------+------------+-------------------------------------------------------------------+
+|  DynamoDB table name                                                        |  secure-employee-directory-TableName |  TableName |  secure-employees                                                 |
+|  DynamoDB table ARN ? provide this to the IAM team to scope the role policy |  secure-employee-directory-TableArn  |  TableArn  |  arn:aws:dynamodb:eu-north-1:ACCOUNT_ID:table/secure-employees  |
++-----------------------------------------------------------------------------+--------------------------------------+------------+-------------------------------------------------------------------+
+
+```
+
+> **Note:** The real ARN has been shared with the IAM team directly.
+> `ACCOUNT_ID` is omitted from this public document intentionally.
+
 
 ## For the IAM..
 
