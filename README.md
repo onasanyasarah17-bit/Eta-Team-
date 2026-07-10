@@ -30,11 +30,11 @@ IAM-least-previlege-backend/
 │   ├── __init__.py
 │   └── config.py
 ├── docs/
-│   └── images/
-│   └── api.md
-│   └── dynamodb-handoff
+│   ├── images/
+│   ├── api.md
+│   └── dynamodb-handoff.md
 ├── infrastructure/
-│   └── dynamodb.yaml.md
+│   └── dynamodb.yaml
 ├── scripts/
 │   └── populate_table.py
 ├── tests/
