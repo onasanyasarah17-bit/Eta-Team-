@@ -1,6 +1,6 @@
 # DynamoDB - Secure Employee Directory
 
-![create_database_table](images/dynamodb-cloudformaation.png)
+![create_database_table](images/dynamodb-cloudformation.png)
 
 The DynamoDB table for this project is provisioned via CloudFormation using the
 template located at `infrastructure/dynamodb.yaml`. This document covers the
