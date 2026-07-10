@@ -32,9 +32,11 @@ IAM-least-previlege-backend/
 ├── docs/
 │   ├── images/
 │   ├── api.md
-│   └── dynamodb-handoff.md
+│   ├── dynamodb-handoff.md
+│   └── ec2-iam-handoff.md
 ├── infrastructure/
-│   └── dynamodb.yaml
+│   ├── dynamodb.yaml
+│   └── ec2-iam.yaml
 ├── scripts/
 │   └── populate_table.py
 ├── tests/
@@ -168,6 +170,18 @@ If running `scripts/populate_table.py`, the role also needs:
 - `dynamodb:PutItem`
 
 Scope permissions to the specific DynamoDB table ARN created by CloudFormation.
+
+Deploy EC2 + the least-privilege instance role with:
+
+```bash
+# See docs/ec2-iam-handoff.md for full steps
+aws cloudformation deploy \
+  --template-file infrastructure/ec2-iam.yaml \
+  --stack-name secure-employee-ec2 \
+  --parameter-overrides KeyName=YOUR_KEY TableArn=YOUR_TABLE_ARN \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region eu-north-1
+```
 
 ## API Documentation
 

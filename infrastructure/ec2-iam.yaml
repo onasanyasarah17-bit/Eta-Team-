@@ -1,0 +1,241 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  EC2 instance, security group, and least-privilege IAM role/instance profile
+  for the Secure Employee Directory Flask app. The app authenticates to DynamoDB
+  through this instance profile — no access keys on the instance.
+
+Parameters:
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Existing EC2 key pair for SSH access
+
+  TableName:
+    Type: String
+    Default: secure-employees
+    Description: DynamoDB table name used by the Flask app
+
+  TableArn:
+    Type: String
+    Description: >
+      Full DynamoDB table ARN (from the DynamoDB stack output or
+      `aws dynamodb describe-table`). Used to scope IAM least privilege.
+
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t3.micro
+      - t3.small
+      - t2.micro
+    Description: EC2 instance type
+
+  SSHLocation:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: >
+      CIDR allowed to SSH (port 22). Restrict to your IP for better security,
+      e.g. 203.0.113.10/32. 0.0.0.0/0 is only for a short demo window.
+
+  AppPort:
+    Type: Number
+    Default: 5000
+    Description: Flask/Gunicorn port exposed by the security group
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: Amazon Linux 2023 AMI from SSM public parameter
+
+  GitRepoUrl:
+    Type: String
+    Default: https://github.com/onasanyasarah17-bit/Eta-Team-.git
+    Description: Public Git repository to clone onto the instance
+
+  GitBranch:
+    Type: String
+    Default: belinda-backend
+    Description: Git branch that contains the Flask backend
+
+  Environment:
+    Type: String
+    Default: production
+    AllowedValues:
+      - development
+      - production
+
+Resources:
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "secure-employee-directory-ec2-role-${AWS::StackName}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Project
+          Value: secure-employee-directory
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  EC2DynamoDBPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: SecureEmployeeDirectoryDynamoDBAccess
+      Roles:
+        - !Ref EC2Role
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ReadEmployeeTable
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:Scan
+              - dynamodb:DescribeTable
+            Resource: !Ref TableArn
+          - Sid: SeedEmployeeTable
+            Effect: Allow
+            Action:
+              - dynamodb:PutItem
+              - dynamodb:BatchWriteItem
+            Resource: !Ref TableArn
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "secure-employee-directory-profile-${AWS::StackName}"
+      Roles:
+        - !Ref EC2Role
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SSH and app access for Secure Employee Directory
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SSHLocation
+          Description: SSH
+        - IpProtocol: tcp
+          FromPort: !Ref AppPort
+          ToPort: !Ref AppPort
+          CidrIp: 0.0.0.0/0
+          Description: Flask application
+      Tags:
+        - Key: Project
+          Value: secure-employee-directory
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  AppInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: EC2DynamoDBPolicy
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref LatestAmiId
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      SecurityGroupIds:
+        - !GetAtt AppSecurityGroup.GroupId
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+          exec > >(tee /var/log/secure-employee-directory-bootstrap.log) 2>&1
+
+          dnf update -y
+          dnf install -y git python3 python3-pip
+
+          mkdir -p /opt/secure-employee-directory
+          cd /opt/secure-employee-directory
+          git clone --branch ${GitBranch} --single-branch ${GitRepoUrl} app
+          cd app
+
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements.txt
+
+          cat >/etc/systemd/system/secure-employee-directory.service <<'UNIT'
+          [Unit]
+          Description=Secure Employee Directory Flask App
+          After=network.target
+
+          [Service]
+          Type=simple
+          WorkingDirectory=/opt/secure-employee-directory/app
+          Environment=FLASK_ENV=production
+          Environment=AWS_REGION=eu-north-1
+          Environment=DYNAMODB_TABLE_NAME=${TableName}
+          Environment=HOST=0.0.0.0
+          Environment=PORT=${AppPort}
+          Environment=SECRET_KEY=change-me-after-demo
+          ExecStart=/usr/local/bin/gunicorn --bind 0.0.0.0:${AppPort} --workers 2 run:app
+          Restart=always
+          RestartSec=5
+          User=root
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+
+          # gunicorn may land in /usr/bin or /usr/local/bin depending on pip
+          GUNICORN_BIN="$(command -v gunicorn || true)"
+          if [ -z "$GUNICORN_BIN" ]; then
+            GUNICORN_BIN="/usr/local/bin/gunicorn"
+          fi
+          sed -i "s|/usr/local/bin/gunicorn|${!GUNICORN_BIN}|g" /etc/systemd/system/secure-employee-directory.service
+
+          systemctl daemon-reload
+          systemctl enable secure-employee-directory
+          systemctl start secure-employee-directory
+
+          # Seed sample employees (safe to re-run; overwrites same keys)
+          python3 scripts/populate_table.py || true
+      Tags:
+        - Key: Name
+          Value: !Sub "secure-employee-directory-${Environment}"
+        - Key: Project
+          Value: secure-employee-directory
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Authentication
+          Value: IAM-Instance-Profile
+
+Outputs:
+  InstanceId:
+    Description: EC2 instance ID
+    Value: !Ref AppInstance
+
+  PublicIp:
+    Description: Public IP — open http://PUBLIC_IP:5000/
+    Value: !GetAtt AppInstance.PublicIp
+
+  AppUrl:
+    Description: Application URL
+    Value: !Sub "http://${AppInstance.PublicIp}:${AppPort}/"
+
+  HealthUrl:
+    Description: Health check URL (should report IAM Role authentication)
+    Value: !Sub "http://${AppInstance.PublicIp}:${AppPort}/health"
+
+  RoleArn:
+    Description: IAM role ARN attached via instance profile
+    Value: !GetAtt EC2Role.Arn
+
+  InstanceProfileArn:
+    Description: Instance profile ARN
+    Value: !GetAtt EC2InstanceProfile.Arn
+
+  SecurityGroupId:
+    Description: Security group ID
+    Value: !GetAtt AppSecurityGroup.GroupId
