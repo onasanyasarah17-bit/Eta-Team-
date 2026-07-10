@@ -1,0 +1,191 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Creates an EC2 instance with an IAM Role for DynamoDB access.
+  The instance is deployed into an existing VPC and supports  
+  application deployment over SSH.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: production
+    AllowedValues:
+      - development
+      - production
+    Description: Deployment environment tag
+
+  DynamoDBTableArn:
+    Type: String
+    Description: ARN of the secure-employees DynamoDB table — retrieve from the DynamoDB stack outputs
+
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+    Description: Ubuntu 22.04 LTS AMI ID — resolved automatically via SSM Parameter Store
+
+  # Parameters for existing VPC
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Existing VPC ID to deploy the instance into
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Existing public subnet ID in the VPC
+
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 Key Pair name for SSH access
+
+  # parameter for SSH allowed CIDR
+  SshCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: CIDR range allowed to SSH into the instance
+    MinLength: 9
+    MaxLength: 18
+    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$
+
+Resources:
+
+
+  # IAM Role — attached to EC2, scoped to DynamoDB table only
+  # -----------------------------------------------------------------
+  EmployeeDirectoryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: secure-employee-directory-ec2-role
+      Description: Allows EC2 to read and write the secure-employees DynamoDB table
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DynamoDBAccessPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: DynamoDBRuntimeAccess
+                Effect: Allow
+                Action:
+                  - dynamodb:Scan
+                  - dynamodb:GetItem
+                  - dynamodb:DescribeTable
+                Resource: !Ref DynamoDBTableArn
+              - Sid: DynamoDBSeedAccess
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:BatchWriteItem
+                Resource: !Ref DynamoDBTableArn
+      Tags:
+        - Key: Project
+          Value: secure-employee-directory
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+
+  # Instance Profile — wraps the Role so EC2 can use it
+  # -----------------------------------------------------------------
+  EmployeeDirectoryInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: secure-employee-directory-instance-profile
+      Roles:
+        - !Ref EmployeeDirectoryRole
+
+ 
+  # Security Group — port 5000 for app, port 22 for SSH.. Uses VpcId parameter, allows SSH
+  # -----------------------------------------------------------------
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow inbound traffic on port 5000 (app) and port 22 (SSH)
+      VpcId: !Ref VpcId  # Uses existing VPC parameter
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5000
+          CidrIp: 0.0.0.0/0
+          Description: Flask app access
+        - IpProtocol: tcp  # NEW: SSH ingress rule
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SshCidr  # Restrictable to specific IP
+          Description: SSH access
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound for package installs and AWS API calls
+      Tags:
+        - Key: Name
+          Value: secure-employee-directory-sg
+        - Key: Project
+          Value: secure-employee-directory
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # -----------------------------------------------------------------
+  # EC2 Instance — Ubuntu 22.04, t2.micro, deployed in existing VPC
+  # -----------------------------------------------------------------
+  AppInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      ImageId: !Ref AmiId
+      IamInstanceProfile: !Ref EmployeeDirectoryInstanceProfile
+      SubnetId: !Ref SubnetId  # Uses existing subnet parameter
+      SecurityGroupIds:
+        - !Ref AppSecurityGroup
+      KeyName: !Ref KeyPairName  # SSH key pair
+      Tags:
+        - Key: Name
+          Value: secure-employee-directory-app
+        - Key: Project
+          Value: secure-employee-directory
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+Outputs:
+  InstanceId:
+    Description: EC2 instance ID
+    Value: !Ref AppInstance
+    Export:
+      Name: !Sub "${AWS::StackName}-InstanceId"
+
+  InstancePublicIp:
+    Description: Public IP of the EC2 instance for SSH access
+    Value: !GetAtt AppInstance.PublicIp
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicIp"
+
+  InstancePublicDns:
+    Description: Public DNS of the EC2 instance for SSH access
+    Value: !GetAtt AppInstance.PublicDnsName
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicDns"
+
+  AppUrl:
+    Description: Flask app URL (once deployed)
+    Value: !Sub "http://${AppInstance.PublicIp}:5000"
+    Export:
+      Name: !Sub "${AWS::StackName}-AppUrl"
+
+  SecurityGroupId:
+    Description: Security group ID
+    Value: !Ref AppSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-SecurityGroupId"
+
+  IamRoleArn:
+    Description: ARN of the IAM Role attached to the EC2 instance
+    Value: !GetAtt EmployeeDirectoryRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-IamRoleArn"

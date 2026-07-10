@@ -33,8 +33,10 @@ IAM-least-previlege-backend/
 │   └── images/
 │   └── api.md
 │   └── dynamodb-handoff
+│   └── ec2-iam-handoff
 ├── infrastructure/
-│   └── dynamodb.yaml.md
+│   └── dynamodb.yaml
+│   └── ec2-iam.yaml
 ├── scripts/
 │   └── populate_table.py
 ├── tests/
