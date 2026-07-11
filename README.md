@@ -177,8 +177,12 @@ Deploy EC2 + the least-privilege instance role with:
 # See docs/ec2-iam-handoff.md for full steps
 aws cloudformation deploy \
   --template-file infrastructure/ec2-iam.yaml \
-  --stack-name secure-employee-ec2 \
-  --parameter-overrides KeyName=YOUR_KEY TableArn=YOUR_TABLE_ARN \
+  --stack-name secure-employee-directory-app \
+  --parameter-overrides \
+    DynamoDBTableArn=YOUR_TABLE_ARN \
+    VpcId=vpc-xxxxxxxx \
+    SubnetId=subnet-xxxxxxxx \
+    KeyPairName=YOUR_KEY_PAIR \
   --capabilities CAPABILITY_NAMED_IAM \
   --region eu-north-1
 ```
