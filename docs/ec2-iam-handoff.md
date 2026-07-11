@@ -44,7 +44,7 @@ infrastructure/ec2-iam.yaml
 | `SubnetId` | — | **Yes** | Existing public subnet |
 | `KeyPairName` | — | **Yes** | EC2 key pair |
 | `SshCidr` | `0.0.0.0/0` | No | SSH allowed CIDR (prefer `YOUR_IP/32`) |
-| `InstanceType` | `t2.micro` | No | Instance size |
+| `InstanceType` | `t3.micro` | No | Instance size (`t2.micro` is not available in `eu-north-1`) |
 | `AppPort` | `5000` | No | App port |
 | `GitRepoUrl` / `GitBranch` | team repo / `belinda-backend` | No | App source to clone |
 
