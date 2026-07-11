@@ -6,6 +6,46 @@ Python Flask backend demonstrating the AWS best practice of allowing an EC2 inst
 
 The application reads employee records from a DynamoDB table and serves them through HTML pages and JSON API endpoints. In AWS, authentication must come from the IAM Role attached to the EC2 instance. No AWS credentials should be hardcoded, committed, or configured with `aws configure`.
 
+## Demo Evidence
+
+Live deployment proof that the EC2 app reads DynamoDB using an IAM Role (no access keys on the instance).
+
+### Health check — IAM Role authentication
+
+`GET /health` reports a healthy app, connected DynamoDB, and authentication via IAM Role:
+
+![Health check showing IAM Role authentication](docs/images/health-check.png)
+
+### Employee directory (HTML)
+
+The home page lists employees from DynamoDB:
+
+![Employee directory in the browser](docs/images/Browser.png)
+
+### REST API
+
+All employees:
+
+![API list employees response](docs/images/api-all-employees.png)
+
+Single employee by ID:
+
+![API get employee response](docs/images/api-single-employee.png)
+
+### No long-term credentials on EC2
+
+Instance metadata shows the attached role. Access key env vars are empty and `~/.aws` is not present:
+
+![EC2 instance has IAM role and no local AWS credentials](docs/images/no-aws-credentials-on-instance.png)
+
+### Least-privilege IAM policy
+
+The instance role policy allows only the required DynamoDB actions on the `secure-employees` table ARN:
+
+![IAM policy scoped to secure-employees table](docs/images/iam-policy.png)
+
+Demo command checklist: [docs/demo-commands.md](docs/demo-commands.md).
+
 ## Architecture
 
 - Flask application factory in `app/__init__.py`
@@ -31,7 +71,14 @@ IAM-least-previlege-backend/
 │   └── config.py
 ├── docs/
 │   ├── images/
+│   │   ├── Browser.png
+│   │   ├── api-all-employees.png
+│   │   ├── api-single-employee.png
+│   │   ├── health-check.png
+│   │   ├── iam-policy.png
+│   │   └── no-aws-credentials-on-instance.png
 │   ├── api.md
+│   ├── demo-commands.md
 │   ├── dynamodb-handoff.md
 │   └── ec2-iam-handoff.md
 ├── infrastructure/
