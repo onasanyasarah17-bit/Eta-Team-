@@ -136,6 +136,12 @@ LOG_LEVEL=INFO
 
 Do not set `AWS_ACCESS_KEY_ID` or `AWS_SECRET_ACCESS_KEY` for the AWS challenge deployment. On EC2, boto3 should use the instance profile credentials from the attached IAM Role.
 
+Production tips:
+
+- Set `LOG_JSON=true` so Gunicorn/stdout logs are CloudWatch Logs Insights friendly.
+- Set `TRUST_PROXY=true` when the app sits behind an Application Load Balancer (HTTPS termination).
+- Prefer `/health/ready` for ALB target health and `/health/live` for process liveness.
+
 ## Local Development
 
 Create a virtual environment:
@@ -259,8 +265,6 @@ See [docs/api.md](docs/api.md).
 
 ## Future Improvements
 
-- Add structured JSON logging for production.
-- Add request IDs and correlation IDs.
 - Add CloudFormation outputs documentation once infrastructure is finalized.
 - Add CI workflow for linting, tests, and Docker build.
-- Add pagination parameters to the public API if the employee table grows.
+- Wire ALB target-group health checks to `/health/ready` (or `/health/live` for liveness-only).

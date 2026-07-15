@@ -16,11 +16,16 @@ class FakeDynamoDBService:
         )
         self.connected = True
 
-    def scan_all(self):
+    def scan_all(self, limit=None, start_key=None):
+        self.last_scan_kwargs = {"limit": limit, "start_key": start_key}
+        items = [self.employee]
+        last_key = None
+        if limit == 1:
+            last_key = {"employeeId": self.employee.employee_id}
         return {
-            "items": [self.employee],
-            "count": 1,
-            "last_evaluated_key": None,
+            "items": items[:limit] if limit else items,
+            "count": len(items[:limit]) if limit else len(items),
+            "last_evaluated_key": last_key,
         }
 
     def get_employee(self, employee_id):
@@ -29,11 +34,14 @@ class FakeDynamoDBService:
         return None
 
     def check_connectivity(self):
-        return {
+        result = {
             "connected": self.connected,
             "table": "test-secure-employees",
             "region": "eu-north-1",
         }
+        if not self.connected:
+            result["error"] = "Simulated DynamoDB disconnect"
+        return result
 
 
 @pytest.fixture()

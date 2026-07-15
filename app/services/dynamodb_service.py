@@ -307,18 +307,18 @@ class DynamoDBService:
             }
         except ClientError as e:
             error_code = e.response["Error"]["Code"]
-            logger.error(f"DynamoDB check failed: {error_code}")
+            logger.error("DynamoDB check failed: %s", error_code)
             return {
                 "connected": False,
                 "table": self.table_name,
                 "region": self.region,
-                "error": str(e),
+                "error": f"DynamoDB error: {error_code}",
             }
-        except Exception as e:
-            logger.error(f"DynamoDB check failed: {e}")
+        except Exception:
+            logger.exception("DynamoDB check failed")
             return {
                 "connected": False,
                 "table": self.table_name,
                 "region": self.region,
-                "error": str(e),
+                "error": "Unexpected error checking DynamoDB connectivity",
             }

@@ -14,6 +14,13 @@ AWS Credentials flow:
 import os
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class Config:
     """Base configuration with sensible defaults."""
 
@@ -37,7 +44,16 @@ class Config:
 
     # Logging
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
-    LOG_FORMAT: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    LOG_FORMAT: str = (
+        "%(asctime)s - %(name)s - %(levelname)s - "
+        "[%(filename)s:%(lineno)d] - %(message)s"
+    )
+    # JSON logs are CloudWatch Logs Insights friendly
+    LOG_JSON: bool = _env_bool("LOG_JSON", False)
+    LOG_FILE: str | None = os.getenv("LOG_FILE") or None
+
+    # Trust X-Forwarded-* headers from one reverse proxy hop (ALB)
+    TRUST_PROXY: bool = _env_bool("TRUST_PROXY", False)
 
 
 class DevelopmentConfig(Config):
@@ -46,6 +62,7 @@ class DevelopmentConfig(Config):
     FLASK_ENV = "development"
     DEBUG = True
     LOG_LEVEL = "DEBUG"
+    LOG_JSON = _env_bool("LOG_JSON", False)
 
 
 class ProductionConfig(Config):
@@ -56,6 +73,9 @@ class ProductionConfig(Config):
     LOG_LEVEL = "INFO"
     # In production, SECRET_KEY MUST be set via environment variable
     SECRET_KEY: str = os.getenv("SECRET_KEY")
+    # Default to JSON logs and proxy trust behind ALB in production
+    LOG_JSON = _env_bool("LOG_JSON", True)
+    TRUST_PROXY = _env_bool("TRUST_PROXY", True)
 
 
 class TestingConfig(Config):
@@ -65,7 +85,9 @@ class TestingConfig(Config):
     TESTING = True
     DEBUG = True
     DYNAMODB_TABLE_NAME = "test-secure-employees"
-    LOG_LEVEL = "DEBUG"
+    LOG_LEVEL = "WARNING"
+    LOG_JSON = False
+    TRUST_PROXY = False
 
 
 def get_config(env: str | None = None) -> type[Config]:

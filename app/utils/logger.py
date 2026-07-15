@@ -1,55 +1,80 @@
 """
 Centralized logging configuration.
 
-Logs:
-- Incoming requests (without sensitive data)
-- Errors and exceptions
-- DynamoDB operations
-- Application startup/shutdown
-
-Never logs:
-- AWS credentials (boto3 handles this securely)
-- Personal information
-- Request/response bodies with PII
+Supports plain-text logs for local development and JSON logs for CloudWatch.
+Never logs AWS credentials, tokens, or request bodies with PII.
 """
 
+from __future__ import annotations
+
+import json
 import logging
 import logging.handlers
-from typing import Optional
+import re
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 
 class SensitiveDataFilter(logging.Filter):
-    """Filter that removes sensitive data from log records."""
+    """Redact common secret patterns from log messages."""
 
-    SENSITIVE_KEYS = {
-        "password",
-        "token",
-        "key",
-        "secret",
-        "credential",
-        "aws_access_key",
-        "aws_secret_key",
-    }
+    SENSITIVE_PATTERNS = (
+        (re.compile(r"(?i)(password|token|secret|credential)\s*[:=]\s*\S+"), r"\1=***REDACTED***"),
+        (re.compile(r"(?i)aws_access_key_id\s*[:=]\s*\S+"), "aws_access_key_id=***REDACTED***"),
+        (re.compile(r"(?i)aws_secret_access_key\s*[:=]\s*\S+"), "aws_secret_access_key=***REDACTED***"),
+        (re.compile(r"AKIA[0-9A-Z]{16}"), "***REDACTED***"),
+    )
 
     def filter(self, record: logging.LogRecord) -> bool:
-        """
-        Filter log records to prevent sensitive data leakage.
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
 
-        Args:
-            record: Log record
+        redacted = message
+        for pattern, replacement in self.SENSITIVE_PATTERNS:
+            redacted = pattern.sub(replacement, redacted)
 
-        Returns:
-            Always True (we modify in-place, not filter out)
-        """
-        # Don't filter messages, just ensure they're safe
-        # boto3 handles credentials securely, so we don't need to filter them
+        if redacted != message:
+            record.msg = redacted
+            record.args = ()
         return True
+
+
+class JsonFormatter(logging.Formatter):
+    """Emit one JSON object per log line for CloudWatch Logs Insights."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, Any] = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+
+        for field in (
+            "request_id",
+            "method",
+            "path",
+            "status",
+            "duration_ms",
+            "remote_addr",
+        ):
+            value = getattr(record, field, None)
+            if value is not None:
+                payload[field] = value
+
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+
+        return json.dumps(payload, default=str)
 
 
 def setup_logging(
     log_level: str = "INFO",
     log_file: Optional[str] = None,
     format_string: Optional[str] = None,
+    json_logs: bool = False,
 ) -> logging.Logger:
     """
     Configure application logging.
@@ -57,41 +82,36 @@ def setup_logging(
     Args:
         log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         log_file: Optional file path for log output
-        format_string: Custom format string for logs
+        format_string: Custom format string for plain-text logs
+        json_logs: If True, emit JSON lines (CloudWatch-friendly)
 
     Returns:
         Configured logger instance
-
-    Example:
-        >>> logger = setup_logging(log_level="DEBUG", log_file="app.log")
-        >>> logger.info("Application started")
     """
     logger = logging.getLogger("secure_employee_directory")
     logger.setLevel(getattr(logging, log_level.upper()))
-
-    # Remove existing handlers to prevent duplicates
     logger.handlers = []
+    logger.propagate = False
 
-    # Default format
-    if format_string is None:
-        format_string = (
-            "%(asctime)s - %(name)s - %(levelname)s - "
-            "[%(filename)s:%(lineno)d] - %(message)s"
-        )
+    if json_logs:
+        formatter: logging.Formatter = JsonFormatter()
+    else:
+        if format_string is None:
+            format_string = (
+                "%(asctime)s - %(name)s - %(levelname)s - "
+                "[%(filename)s:%(lineno)d] - %(message)s"
+            )
+        formatter = logging.Formatter(format_string)
 
-    formatter = logging.Formatter(format_string)
-
-    # Console handler (always enabled)
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
     console_handler.addFilter(SensitiveDataFilter())
     logger.addHandler(console_handler)
 
-    # File handler (if log_file specified)
     if log_file:
         file_handler = logging.handlers.RotatingFileHandler(
             log_file,
-            maxBytes=10 * 1024 * 1024,  # 10MB
+            maxBytes=10 * 1024 * 1024,
             backupCount=5,
         )
         file_handler.setFormatter(formatter)
@@ -102,17 +122,5 @@ def setup_logging(
 
 
 def get_logger(name: str) -> logging.Logger:
-    """
-    Get a logger instance for a module.
-
-    Args:
-        name: Logger name (typically __name__)
-
-    Returns:
-        Logger instance
-
-    Example:
-        >>> logger = get_logger(__name__)
-        >>> logger.info("Module initialized")
-    """
+    """Get a logger instance for a module."""
     return logging.getLogger(f"secure_employee_directory.{name}")

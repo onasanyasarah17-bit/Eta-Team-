@@ -2,103 +2,93 @@
 REST API routes (JSON endpoints).
 
 Handles:
-- GET /api/employees - List all employees
+- GET /api/employees - List employees (optional pagination)
 - GET /api/employees/<employee_id> - Get single employee
 
 All responses follow REST conventions with proper HTTP status codes.
 Uses DynamoDB service for data retrieval.
 """
 
-from flask import Blueprint, jsonify, current_app
+from flask import Blueprint, current_app, jsonify, request
 from botocore.exceptions import ClientError, NoCredentialsError
+
+from app.utils.errors import (
+    client_error_response,
+    credentials_error_response,
+    error_response,
+)
 from app.utils.logger import get_logger
+from app.utils.validators import (
+    ValidationError,
+    decode_start_key,
+    encode_start_key,
+    parse_page_limit,
+    validate_employee_id,
+)
 
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 logger = get_logger(__name__)
 
-AWS_CREDENTIALS_ERROR = (
-    "AWS credentials not found. IAM Role may not be attached to EC2 instance."
-)
-
-DYNAMODB_ERROR_MESSAGES = {
-    "ResourceNotFoundException": "DynamoDB table not found",
-    "AccessDeniedException": "Access denied to DynamoDB. Check IAM Role permissions.",
-    "ProvisionedThroughputExceededException": "DynamoDB throughput exceeded",
-}
-
-
-def _dynamodb_error_response(error: ClientError):
-    error_code = error.response["Error"]["Code"]
-    message = DYNAMODB_ERROR_MESSAGES.get(
-        error_code,
-        f"DynamoDB error: {error_code}",
-    )
-    return (
-        jsonify(
-            {
-                "error": error_code,
-                "message": message,
-            }
-        ),
-        500,
-    )
-
 
 @api_bp.route("/employees", methods=["GET"])
 def list_employees():
     """
-    Get all employees as JSON.
+    Get employees as JSON.
+
+    Query params:
+        limit: optional page size (1-100). Omit to return all pages.
+        start_key: opaque token from a previous response's next_start_key.
 
     Returns:
-        200: {"employees": [Employee objects], "count": int}
-        500: {"error": str, "message": str}
+        200: {"employees": [...], "count": int, "next_start_key": str|null}
+        400/403/404/503/500: {"error": str, "message": str, "request_id": str}
     """
     try:
+        limit = parse_page_limit(request.args.get("limit"))
+        start_key = decode_start_key(request.args.get("start_key"))
+
         dynamodb_service = current_app.dynamodb_service
-
-        # Scan all employees from DynamoDB
-        result = dynamodb_service.scan_all()
+        result = dynamodb_service.scan_all(limit=limit, start_key=start_key)
         employees = result["items"]
+        next_start_key = encode_start_key(result.get("last_evaluated_key"))
 
-        logger.info(f"API: Retrieved {len(employees)} employees")
+        logger.info(
+            "API: Retrieved %s employees (limit=%s, has_more=%s)",
+            len(employees),
+            limit,
+            bool(next_start_key),
+        )
 
         return (
             jsonify(
                 {
                     "employees": [emp.to_dict() for emp in employees],
                     "count": len(employees),
+                    "next_start_key": next_start_key,
                 }
             ),
             200,
         )
 
+    except ValidationError as e:
+        logger.warning("API: Invalid list employees query: %s", e)
+        return error_response("BadRequest", str(e), 400)
+
     except NoCredentialsError:
         logger.error("API: IAM Role credentials not found")
-        return (
-            jsonify(
-                {
-                    "error": "CredentialsError",
-                    "message": AWS_CREDENTIALS_ERROR,
-                }
-            ),
-            500,
-        )
+        return credentials_error_response()
 
     except ClientError as e:
         error_code = e.response["Error"]["Code"]
-        logger.error(f"API: DynamoDB error while listing employees: {error_code}")
-        return _dynamodb_error_response(e)
+        logger.error("API: DynamoDB error while listing employees: %s", error_code)
+        return client_error_response(e)
 
-    except Exception as e:
-        logger.error(f"API: Unexpected error listing employees: {e}")
-        return (
-            jsonify(
-                {
-                    "error": "InternalServerError",
-                    "message": str(e),
-                }
-            ),
+    except Exception:
+        logger.exception("API: Unexpected error listing employees")
+        return error_response(
+            "InternalServerError",
+            "An unexpected error occurred",
             500,
         )
 
@@ -113,42 +103,23 @@ def get_employee(employee_id: str):
 
     Returns:
         200: {"employee": Employee object}
-        400: {"error": str, "message": str} - Invalid ID
-        404: {"error": str, "message": str} - Employee not found
-        500: {"error": str, "message": str} - Server error
+        400/403/404/503/500: {"error": str, "message": str, "request_id": str}
     """
     try:
-        # Validate employee_id
-        if not employee_id or not employee_id.strip():
-            logger.warning("API: Empty employee_id provided")
-            return (
-                jsonify(
-                    {
-                        "error": "BadRequest",
-                        "message": "employee_id cannot be empty",
-                    }
-                ),
-                400,
-            )
+        normalized_id = validate_employee_id(employee_id)
 
         dynamodb_service = current_app.dynamodb_service
-
-        # Get employee by ID
-        employee = dynamodb_service.get_employee(employee_id)
+        employee = dynamodb_service.get_employee(normalized_id)
 
         if not employee:
-            logger.info(f"API: Employee not found: {employee_id}")
-            return (
-                jsonify(
-                    {
-                        "error": "NotFound",
-                        "message": f"Employee with ID '{employee_id}' not found",
-                    }
-                ),
+            logger.info("API: Employee not found: %s", normalized_id)
+            return error_response(
+                "NotFound",
+                f"Employee with ID '{normalized_id}' not found",
                 404,
             )
 
-        logger.info(f"API: Retrieved employee: {employee_id}")
+        logger.info("API: Retrieved employee: %s", normalized_id)
 
         return (
             jsonify(
@@ -159,31 +130,23 @@ def get_employee(employee_id: str):
             200,
         )
 
+    except ValidationError as e:
+        logger.warning("API: Invalid employee_id: %s", e)
+        return error_response("BadRequest", str(e), 400)
+
     except NoCredentialsError:
         logger.error("API: IAM Role credentials not found")
-        return (
-            jsonify(
-                {
-                    "error": "CredentialsError",
-                    "message": AWS_CREDENTIALS_ERROR,
-                }
-            ),
-            500,
-        )
+        return credentials_error_response()
 
     except ClientError as e:
         error_code = e.response["Error"]["Code"]
-        logger.error(f"API: DynamoDB error while getting employee: {error_code}")
-        return _dynamodb_error_response(e)
+        logger.error("API: DynamoDB error while getting employee: %s", error_code)
+        return client_error_response(e)
 
-    except Exception as e:
-        logger.error(f"API: Unexpected error getting employee: {e}")
-        return (
-            jsonify(
-                {
-                    "error": "InternalServerError",
-                    "message": str(e),
-                }
-            ),
+    except Exception:
+        logger.exception("API: Unexpected error getting employee")
+        return error_response(
+            "InternalServerError",
+            "An unexpected error occurred",
             500,
         )

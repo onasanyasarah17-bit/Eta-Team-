@@ -1,12 +1,21 @@
 # Secure Employee Directory API
 
-Base URL: `http://localhost:5000`
+Base URL: `http://localhost:5000` (or `https://...` when served behind an ALB)
 
-## Health Check
+Every response includes an `X-Request-ID` header. Error JSON bodies also include `request_id` when available.
+
+## Health Checks
+
+### Combined / readiness-style health
 
 `GET /health`
 
+Also available as `GET /health/ready`.
+
 Returns application health, DynamoDB connectivity, and authentication method.
+
+- `200` when DynamoDB is reachable (`status: healthy`)
+- `503` when DynamoDB is unreachable (`status: degraded`) — suitable for load balancer target checks
 
 Example response:
 
@@ -17,7 +26,21 @@ Example response:
   "authentication": "IAM Role",
   "table": "secure-employees",
   "region": "eu-north-1",
-  "error": null
+  "error": null,
+  "request_id": "demo-request-1"
+}
+```
+
+### Liveness
+
+`GET /health/live`
+
+Process-only check. Always returns `200` if the Flask process is up (does not call DynamoDB).
+
+```json
+{
+  "status": "alive",
+  "request_id": "demo-request-1"
 }
 ```
 
@@ -25,7 +48,14 @@ Example response:
 
 `GET /api/employees`
 
-Returns all employees from DynamoDB.
+Returns employees from DynamoDB.
+
+Optional query parameters:
+
+| Param | Description |
+|-------|-------------|
+| `limit` | Page size (`1`–`100`). Omit to return all pages. |
+| `start_key` | Opaque token from a previous `next_start_key`. |
 
 Example response:
 
@@ -41,9 +71,12 @@ Example response:
       "office": "Nairobi"
     }
   ],
-  "count": 1
+  "count": 1,
+  "next_start_key": null
 }
 ```
+
+When more pages exist, `next_start_key` is a string token. Pass it back as `start_key` on the next request.
 
 ## Get Employee
 
@@ -73,16 +106,26 @@ Common errors:
 ```json
 {
   "error": "NotFound",
-  "message": "Employee with ID 'EMP999' not found"
+  "message": "Employee with ID 'EMP999' not found",
+  "request_id": "demo-request-1"
 }
 ```
 
 ```json
 {
   "error": "AccessDeniedException",
-  "message": "Access denied to DynamoDB. Check IAM Role permissions."
+  "message": "Access denied to DynamoDB. Check IAM Role permissions.",
+  "request_id": "demo-request-1"
 }
 ```
+
+| Condition | HTTP status |
+|-----------|-------------|
+| Invalid / empty `employeeId` | `400` |
+| Employee or table not found | `404` |
+| IAM AccessDenied | `403` |
+| Missing IAM Role credentials / DynamoDB throttle | `503` |
+| Unexpected server error | `500` (no internal exception text) |
 
 ## Data Contract
 
