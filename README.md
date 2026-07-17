@@ -58,7 +58,6 @@ Demo command checklist: [docs/demo-commands.md](docs/demo-commands.md).
 
 ## Folder Structure
 
-```text
 IAM-least-previlege-backend/
 ├── app/
 │   ├── routes/
@@ -80,10 +79,12 @@ IAM-least-previlege-backend/
 │   ├── api.md
 │   ├── demo-commands.md
 │   ├── dynamodb-handoff.md
-│   └── ec2-iam-handoff.md
+│   ├── ec2-iam-handoff.md
+│   └── alb-https-handoff.md
 ├── infrastructure/
 │   ├── dynamodb.yaml
-│   └── ec2-iam.yaml
+│   ├── ec2-iam.yaml
+│   └── alb-https.yaml
 ├── scripts/
 │   └── populate_table.py
 ├── tests/
@@ -262,6 +263,53 @@ See [docs/api.md](docs/api.md).
 - Confirm `DYNAMODB_TABLE_NAME`.
 - Confirm `AWS_REGION`.
 - Confirm CloudFormation created the table successfully.
+
+## HTTPS / ALB with Route 53
+HTTPS is configured via an Application Load Balancer with an ACM certificate and automated DNS validation through Route 53. The stack handles everything automatically with no manual DNS record creation required.
+
+Check [docs/alb-https-handoff.md](docs/alb-https-handoff.md) for the setup.
+
+**Architecture Overview**
+```
+Browser
+  │
+  ├── HTTP :80  ──► ALB ──► 301 redirect to HTTPS
+  │
+  └── HTTPS :443 ─► ALB (TLS terminated with ACM cert)
+                      │
+                      ▼
+              Target Group (health check: GET /health/ready → 200)
+                      │
+                      ▼
+              EC2 Instance :5000 (Flask / Gunicorn)
+                      │
+                      ▼
+                  DynamoDB (via IAM Instance Profile)
+
+```
+
+### Key Features
+
+- Automated DNS validation — ACM certificate validates automatically via Route 53
+- Zero manual steps — no CNAME records to create manually
+- Automatic renewal — ACM auto-renews certificates before expiry
+- Route 53 alias record — (optional) automatically points your domain to the ALB
+- TLS 1.2+ enforced — ELBSecurityPolicy-TLS13-1-2-2021-06 policy
+- HTTP to HTTPS redirect — 301 redirect, browsers cache it
+- EC2 port 5000 only accessible from ALB security group
+
+### Getting the Route 53 Hosted Zone ID
+
+```
+# List all hosted zones
+aws route53 list-hosted-zones --region eu-north-1
+
+# Example output:
+# HOSTEDZONES  employees.yourdomain.com.  /hostedzone/ZXXXXXXXXXXXXX
+
+# Copy just the ID: ZXXXXXXXXXXXXX (without /hostedzone/)
+```
+
 
 ## Future Improvements
 
