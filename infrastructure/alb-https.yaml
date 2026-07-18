@@ -12,15 +12,15 @@ Parameters:
     AllowedValues:
       - development
       - production
-    Description: Deployment environment tag — applied to all resource tags
+    Description: Deployment environment tag - applied to all resource tags
 
   VpcId:
     Type: AWS::EC2::VPC::Id
-    Description: VPC ID — must be the same VPC used in the EC2/IAM stack
+    Description: VPC ID - must be the same VPC used in the EC2/IAM stack
 
   PublicSubnet1Id:
     Type: AWS::EC2::Subnet::Id
-    Description: First public subnet — ALB requires subnets in at least two AZs
+    Description: First public subnet - ALB requires subnets in at least two AZs
 
   PublicSubnet2Id:
     Type: AWS::EC2::Subnet::Id
@@ -82,19 +82,19 @@ Resources:
   AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: !Sub "${AWS::StackName} — ALB inbound HTTP and HTTPS"
+      GroupDescription: !Sub "${AWS::StackName} - ALB inbound HTTP and HTTPS"
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
           CidrIp: 0.0.0.0/0
-          Description: HTTP — redirected to HTTPS by the listener
+          Description: HTTP - redirected to HTTPS by the listener
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
           CidrIp: 0.0.0.0/0
-          Description: HTTPS — TLS terminated at the ALB
+          Description: HTTPS - TLS terminated at the ALB
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
@@ -150,7 +150,7 @@ Resources:
 
   # -----------------------------------------------------------------
   # Target Group
-  # Health check uses /health/ready — returns 200 when DynamoDB is
+  # Health check uses /health/ready - returns 200 when DynamoDB is
   # reachable, 503 when not (correctly pulls instance out of rotation).
   # Use /health/live for process-only liveness probes.
   # -----------------------------------------------------------------
@@ -218,13 +218,13 @@ Resources:
 
 Outputs:
   AlbDnsName:
-    Description: ALB DNS name — create a CNAME (or Route 53 alias A record) pointing your domain here
+    Description: ALB DNS name - create a CNAME (or Route 53 alias A record) pointing your domain here
     Value: !GetAtt AppLoadBalancer.DNSName
     Export:
       Name: !Sub "${AWS::StackName}-AlbDnsName"
 
   AlbHostedZoneId:
-    Description: ALB canonical hosted zone ID — used when creating Route 53 alias A records
+    Description: ALB canonical hosted zone ID - used when creating Route 53 alias A records
     Value: !GetAtt AppLoadBalancer.CanonicalHostedZoneID
     Export:
       Name: !Sub "${AWS::StackName}-AlbHostedZoneId"
@@ -248,7 +248,7 @@ Outputs:
       Name: !Sub "${AWS::StackName}-CertificateArn"
 
   HttpsUrl:
-    Description: HTTPS URL — accessible after DNS propagation and ACM validation
+    Description: HTTPS URL - accessible after DNS propagation and ACM validation
     Value: !Sub "https://${DomainName}"
     Export:
       Name: !Sub "${AWS::StackName}-HttpsUrl"
