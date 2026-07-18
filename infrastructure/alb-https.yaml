@@ -1,10 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   Application Load Balancer with ACM SSL/TLS certificate for the Secure Employee Directory.
-  Terminates HTTPS on port 443, forwards to EC2 on port 5000.
-  HTTP on port 80 is redirected to HTTPS automatically.
-  Uses Route 53 for automated DNS validation and domain management.
-  Depends on the EC2/IAM stack for the instance ID and security group.
+  Terminates HTTPS on port 443 and forwards plain HTTP to the EC2 instance on port 5000.
+  HTTP port 80 redirects to HTTPS with a 301.
+  Depends on the EC2/IAM stack for the instance ID and security group ID.
 
 Parameters:
   Environment:
@@ -13,64 +12,60 @@ Parameters:
     AllowedValues:
       - development
       - production
-    Description: Deployment environment tag
+    Description: Deployment environment tag — applied to all resource tags
 
   VpcId:
     Type: AWS::EC2::VPC::Id
-    Description: VPC ID — must match the VPC used in the EC2/IAM stack
+    Description: VPC ID — must be the same VPC used in the EC2/IAM stack
 
   PublicSubnet1Id:
     Type: AWS::EC2::Subnet::Id
-    Description: First public subnet ID — ALB requires at least two AZs
+    Description: First public subnet — ALB requires subnets in at least two AZs
 
   PublicSubnet2Id:
     Type: AWS::EC2::Subnet::Id
-    Description: Second public subnet ID in a different AZ from Subnet1
+    Description: Second public subnet in a different AZ from PublicSubnet1Id
 
   Ec2InstanceId:
     Type: String
-    Description: EC2 instance ID from the EC2/IAM stack outputs (AppInstance)
+    Description: >
+      EC2 instance ID from the EC2/IAM stack (Outputs.InstanceId).
+      Example: i-0abc1234567890def
 
   Ec2SecurityGroupId:
     Type: String
-    Description: Security group ID from the EC2/IAM stack — ALB SG will be added as an inbound source
+    Description: >
+      Security group ID from the EC2/IAM stack (Outputs.SecurityGroupId).
+      The ALB security group will be added as the sole allowed inbound source
+      on AppPort, replacing the open 0.0.0.0/0 rule.
 
   DomainName:
     Type: String
+    Default: employees.pcons.me
     Description: >
-      Fully qualified domain name for the app (e.g. employees.yourdomain.com).
-      Must be a domain you control in Route 53.
-
-  HostedZoneId:
-    Type: String
-    Description: Route 53 hosted zone ID for the domain. Used for automated DNS validation and ALB alias record.
+      Fully qualified domain name for the app (e.g. employees.pcons.me).
+      Must be a domain you control. ACM validates it via a DNS CNAME record
+      you add to your DNS provider (see Step 4 in docs/alb-https-handoff.md).
 
   AppPort:
     Type: Number
     Default: 5000
-    Description: Port the Flask app listens on — must match the EC2/IAM stack AppPort
-
-  CreateAliasRecord:
-    Type: String
-    Default: "true"
-    AllowedValues:
-      - "true"
-      - "false"
-    Description: Whether to create a Route 53 alias record pointing to the ALB
+    Description: >
+      Port the Flask/Gunicorn app listens on inside the EC2 instance.
+      Must match the AppPort parameter used in the EC2/IAM stack (default 5000).
 
 Resources:
 
   # -----------------------------------------------------------------
-  # ACM Certificate — DNS validated automatically via Route 53
+  # ACM Certificate (DNS validated)
+  # The stack pauses at CREATE_IN_PROGRESS here until the CNAME is
+  # added. See Step 4 in docs/alb-https-handoff.md.
   # -----------------------------------------------------------------
   AppCertificate:
     Type: AWS::CertificateManager::Certificate
     Properties:
       DomainName: !Ref DomainName
       ValidationMethod: DNS
-      DomainValidationOptions:
-        - DomainName: !Ref DomainName
-          HostedZoneId: !Ref HostedZoneId
       Tags:
         - Key: Project
           Value: secure-employee-directory
@@ -80,32 +75,33 @@ Resources:
           Value: CloudFormation
 
   # -----------------------------------------------------------------
-  # ALB Security Group — accepts port 80 and 443 from anywhere
-  # EC2 only accepts traffic from this SG (enforced by Ec2IngressFromAlb)
+  # ALB Security Group
+  # Accepts HTTP (80) and HTTPS (443) from anywhere.
+  # EC2 is locked to only accept traffic from this SG on AppPort.
   # -----------------------------------------------------------------
   AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: ALB — allow HTTP and HTTPS from the internet
+      GroupDescription: !Sub "${AWS::StackName} — ALB inbound HTTP and HTTPS"
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
           CidrIp: 0.0.0.0/0
-          Description: HTTP — redirected to HTTPS
+          Description: HTTP — redirected to HTTPS by the listener
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
           CidrIp: 0.0.0.0/0
-          Description: HTTPS — TLS terminated here
+          Description: HTTPS — TLS terminated at the ALB
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
-          Description: ALB outbound to EC2
+          Description: ALB outbound to EC2 target
       Tags:
         - Key: Name
-          Value: !Sub "${Environment}-secure-employee-directory-alb-sg"
+          Value: !Sub "${AWS::StackName}-alb-sg"
         - Key: Project
           Value: secure-employee-directory
         - Key: Environment
@@ -114,8 +110,10 @@ Resources:
           Value: CloudFormation
 
   # -----------------------------------------------------------------
-  # Ingress rule on the existing EC2 SG — allow only from the ALB SG
-  # Locks down direct access to port 5000 from the internet
+  # Ingress rule on the existing EC2 security group
+  # Allows AppPort traffic from the ALB SG only.
+  # NOTE: The old 0.0.0.0/0 rule on AppPort must be removed manually
+  # from the EC2 SG after this stack deploys (see Troubleshooting).
   # -----------------------------------------------------------------
   Ec2IngressFromAlb:
     Type: AWS::EC2::SecurityGroupIngress
@@ -125,15 +123,15 @@ Resources:
       FromPort: !Ref AppPort
       ToPort: !Ref AppPort
       SourceSecurityGroupId: !Ref AlbSecurityGroup
-      Description: Allow traffic on app port from ALB SG only
+      Description: Allow app port traffic from ALB SG only
 
   # -----------------------------------------------------------------
-  # Application Load Balancer — internet-facing, dual-AZ
+  # Application Load Balancer (internet-facing, dual-AZ)
   # -----------------------------------------------------------------
   AppLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      Name: !Sub "${Environment}-secure-employee-directory-alb"
+      Name: !Sub "${AWS::StackName}"
       Type: application
       Scheme: internet-facing
       IpAddressType: ipv4
@@ -151,12 +149,15 @@ Resources:
           Value: CloudFormation
 
   # -----------------------------------------------------------------
-  # Target Group — health check uses /health/ready per app contract
+  # Target Group
+  # Health check uses /health/ready — returns 200 when DynamoDB is
+  # reachable, 503 when not (correctly pulls instance out of rotation).
+  # Use /health/live for process-only liveness probes.
   # -----------------------------------------------------------------
   AppTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      Name: !Sub "${Environment}-secure-employee-directory-tg"
+      Name: !Sub "${AWS::StackName}-tg"
       VpcId: !Ref VpcId
       Protocol: HTTP
       Port: !Ref AppPort
@@ -181,7 +182,9 @@ Resources:
           Value: CloudFormation
 
   # -----------------------------------------------------------------
-  # HTTPS Listener — port 443, TLS 1.2+ enforced
+  # HTTPS Listener (port 443)
+  # TLS terminated here using the ACM certificate.
+  # Policy enforces TLS 1.2 minimum, prefers TLS 1.3.
   # -----------------------------------------------------------------
   HttpsListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -195,12 +198,10 @@ Resources:
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref AppTargetGroup
-      DependsOn:
-        - AppCertificate
-        - AppTargetGroup
 
   # -----------------------------------------------------------------
-  # HTTP Listener — port 80, permanent redirect to HTTPS
+  # HTTP Listener (port 80)
+  # Permanently redirects to HTTPS (301). Browsers cache this.
   # -----------------------------------------------------------------
   HttpListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -215,34 +216,15 @@ Resources:
             Port: "443"
             StatusCode: HTTP_301
 
-  # -----------------------------------------------------------------
-  # Route 53 Alias Record — points domain to ALB (optional)
-  # -----------------------------------------------------------------
-  AppAliasRecord:
-    Type: AWS::Route53::RecordSet
-    Condition: CreateAliasRecordCondition
-    Properties:
-      HostedZoneId: !Ref HostedZoneId
-      Name: !Ref DomainName
-      Type: A
-      AliasTarget:
-        DNSName: !GetAtt AppLoadBalancer.DNSName
-        HostedZoneId: !GetAtt AppLoadBalancer.CanonicalHostedZoneID
-      Comment: !Sub "Alias record for ${Environment} secure-employee-directory ALB"
-
-Conditions:
-  CreateAliasRecordCondition:
-    !Equals [!Ref CreateAliasRecord, "true"]
-
 Outputs:
   AlbDnsName:
-    Description: ALB DNS name — point your domain CNAME here
+    Description: ALB DNS name — create a CNAME (or Route 53 alias A record) pointing your domain here
     Value: !GetAtt AppLoadBalancer.DNSName
     Export:
       Name: !Sub "${AWS::StackName}-AlbDnsName"
 
   AlbHostedZoneId:
-    Description: ALB canonical hosted zone ID — used for Route 53 alias A records
+    Description: ALB canonical hosted zone ID — used when creating Route 53 alias A records
     Value: !GetAtt AppLoadBalancer.CanonicalHostedZoneID
     Export:
       Name: !Sub "${AWS::StackName}-AlbHostedZoneId"
@@ -266,7 +248,7 @@ Outputs:
       Name: !Sub "${AWS::StackName}-CertificateArn"
 
   HttpsUrl:
-    Description: HTTPS URL — accessible after DNS propagation and cert validation
+    Description: HTTPS URL — accessible after DNS propagation and ACM validation
     Value: !Sub "https://${DomainName}"
     Export:
       Name: !Sub "${AWS::StackName}-HttpsUrl"
@@ -276,7 +258,3 @@ Outputs:
     Value: !Ref AlbSecurityGroup
     Export:
       Name: !Sub "${AWS::StackName}-AlbSecurityGroupId"
-
-  DomainValidationStatus:
-    Description: Status of certificate domain validation
-    Value: !GetAtt AppCertificate.DomainValidationOptions

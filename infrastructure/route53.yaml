@@ -1,0 +1,146 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Route 53 DNS records for the Secure Employee Directory.
+  Creates a hosted zone for the root domain (if one does not already exist)
+  and an alias A record pointing the app subdomain at the ALB.
+  Depends on the ALB stack for the ALB DNS name and hosted zone ID.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: production
+    AllowedValues:
+      - development
+      - production
+    Description: Deployment environment tag
+
+  RootDomain:
+    Type: String
+    Default: pcons.me
+    Description: >
+      Root domain you own (e.g. pcons.me — no trailing dot, no subdomain).
+      A public hosted zone will be created for this domain.
+      If a hosted zone already exists in this account for this domain,
+      use the ExistingHostedZoneId parameter instead and set
+      CreateHostedZone to false.
+
+  AppSubdomain:
+    Type: String
+    Default: employees
+    Description: >
+      Subdomain prefix for the app (default: employees).
+      The final record will be <AppSubdomain>.<RootDomain>
+      e.g. employees.pcons.me.
+      Must match the DomainName used in the ALB stack.
+
+  AlbStackName:
+    Type: String
+    Default: secure-employee-directory-alb
+    Description: >
+      Name of the ALB CloudFormation stack.
+      Used to import AlbDnsName and AlbHostedZoneId via Fn::ImportValue.
+
+  CreateHostedZone:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >
+      Set to true to create a new Route 53 public hosted zone for RootDomain.
+      Set to false if a hosted zone for this domain already exists in the
+      account — provide its ID in ExistingHostedZoneId.
+
+  ExistingHostedZoneId:
+    Type: String
+    Default: ""
+    Description: >
+      Hosted zone ID to use when CreateHostedZone is false.
+      Leave empty when CreateHostedZone is true.
+      Example: Z1D633PJN98FT9
+
+Conditions:
+  ShouldCreateHostedZone: !Equals [!Ref CreateHostedZone, "true"]
+  UseExistingHostedZone: !Not [!Condition ShouldCreateHostedZone]
+
+Resources:
+
+  # -----------------------------------------------------------------
+  # Public Hosted Zone
+  # Created only when CreateHostedZone is true.
+  # After creation, delegate the domain by copying the NS records
+  # shown in Outputs.NameServers to your registrar.
+  # Skip this if the hosted zone already exists (set CreateHostedZone=false).
+  # -----------------------------------------------------------------
+  AppHostedZone:
+    Type: AWS::Route53::HostedZone
+    Condition: ShouldCreateHostedZone
+    Properties:
+      Name: !Sub "${RootDomain}."
+      HostedZoneConfig:
+        Comment: !Sub "Public hosted zone for ${RootDomain} — managed by CloudFormation"
+      HostedZoneTags:
+        - Key: Project
+          Value: secure-employee-directory
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # -----------------------------------------------------------------
+  # Alias A Record — points AppSubdomain.RootDomain at the ALB
+  # Uses an alias (not a CNAME) so it resolves at the zone apex if
+  # needed and has no TTL billing cost.
+  # Imports AlbDnsName and AlbHostedZoneId from the ALB stack.
+  # -----------------------------------------------------------------
+  AppAliasRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !If
+        - ShouldCreateHostedZone
+        - !Ref AppHostedZone
+        - !Ref ExistingHostedZoneId
+      Name: !Sub "${AppSubdomain}.${RootDomain}."
+      Type: A
+      AliasTarget:
+        DNSName: !ImportValue
+          Fn::Sub: "${AlbStackName}-AlbDnsName"
+        HostedZoneId: !ImportValue
+          Fn::Sub: "${AlbStackName}-AlbHostedZoneId"
+        EvaluateTargetHealth: true
+
+Outputs:
+  HostedZoneId:
+    Description: >
+      Route 53 hosted zone ID.
+      New zone when CreateHostedZone=true; ExistingHostedZoneId when false.
+    Value: !If
+      - ShouldCreateHostedZone
+      - !Ref AppHostedZone
+      - !Ref ExistingHostedZoneId
+    Export:
+      Name: !Sub "${AWS::StackName}-HostedZoneId"
+
+  NameServers:
+    Description: >
+      NS records for the hosted zone.
+      Copy these four values to your domain registrar to delegate DNS to Route 53.
+      Only meaningful when CreateHostedZone=true.
+    Value: !If
+      - ShouldCreateHostedZone
+      - !Join [", ", !GetAtt AppHostedZone.NameServers]
+      - "N/A — using existing hosted zone"
+    Export:
+      Name: !Sub "${AWS::StackName}-NameServers"
+
+  AppRecordName:
+    Description: Fully qualified DNS name of the alias A record
+    Value: !Sub "${AppSubdomain}.${RootDomain}"
+    Export:
+      Name: !Sub "${AWS::StackName}-AppRecordName"
+
+  AppUrl:
+    Description: HTTPS URL — live once NS delegation propagates
+    Value: !Sub "https://${AppSubdomain}.${RootDomain}"
+    Export:
+      Name: !Sub "${AWS::StackName}-AppUrl"

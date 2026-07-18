@@ -58,6 +58,7 @@ Demo command checklist: [docs/demo-commands.md](docs/demo-commands.md).
 
 ## Folder Structure
 
+```text
 IAM-least-previlege-backend/
 ├── app/
 │   ├── routes/
@@ -80,11 +81,14 @@ IAM-least-previlege-backend/
 │   ├── demo-commands.md
 │   ├── dynamodb-handoff.md
 │   ├── ec2-iam-handoff.md
-│   └── alb-https-handoff.md
+│   ├── alb-https-handoff.md
+│   ├── route53-handoff.md
+│   └── deployment-guide.md
 ├── infrastructure/
 │   ├── dynamodb.yaml
 │   ├── ec2-iam.yaml
-│   └── alb-https.yaml
+│   ├── alb-https.yaml
+│   └── route53.yaml
 ├── scripts/
 │   └── populate_table.py
 ├── tests/
@@ -264,55 +268,53 @@ See [docs/api.md](docs/api.md).
 - Confirm `AWS_REGION`.
 - Confirm CloudFormation created the table successfully.
 
-## HTTPS / ALB with Route 53
-HTTPS is configured via an Application Load Balancer with an ACM certificate and automated DNS validation through Route 53. The stack handles everything automatically with no manual DNS record creation required.
+## Deployment
 
-Check [docs/alb-https-handoff.md](docs/alb-https-handoff.md) for the setup.
+For a full end-to-end walkthrough — AWS account setup, all three stacks,
+ACM certificate validation, and Namecheap DNS — see:
 
-**Architecture Overview**
-```
-Browser
-  │
-  ├── HTTP :80  ──► ALB ──► 301 redirect to HTTPS
-  │
-  └── HTTPS :443 ─► ALB (TLS terminated with ACM cert)
-                      │
-                      ▼
-              Target Group (health check: GET /health/ready → 200)
-                      │
-                      ▼
-              EC2 Instance :5000 (Flask / Gunicorn)
-                      │
-                      ▼
-                  DynamoDB (via IAM Instance Profile)
+**[docs/deployment-guide.md](docs/deployment-guide.md)**
 
-```
+---
 
-### Key Features
+## HTTPS / ALB
 
-- Automated DNS validation — ACM certificate validates automatically via Route 53
-- Zero manual steps — no CNAME records to create manually
-- Automatic renewal — ACM auto-renews certificates before expiry
-- Route 53 alias record — (optional) automatically points your domain to the ALB
-- TLS 1.2+ enforced — ELBSecurityPolicy-TLS13-1-2-2021-06 policy
-- HTTP to HTTPS redirect — 301 redirect, browsers cache it
-- EC2 port 5000 only accessible from ALB security group
+HTTPS is terminated at an Application Load Balancer with an ACM certificate.
+DNS is managed directly in Namecheap — no Route 53 stack is needed.
 
-### Getting the Route 53 Hosted Zone ID
+| Stack | Template | Guide |
+|-------|----------|-------|
+| `secure-employee-directory` | `infrastructure/dynamodb.yaml` | `docs/dynamodb-handoff.md` |
+| `secure-employee-directory-app` | `infrastructure/ec2-iam.yaml` | `docs/ec2-iam-handoff.md` |
+| `secure-employee-directory-alb` | `infrastructure/alb-https.yaml` | `docs/alb-https-handoff.md` |
 
-```
-# List all hosted zones
-aws route53 list-hosted-zones --region eu-north-1
+### Deploy
 
-# Example output:
-# HOSTEDZONES  employees.yourdomain.com.  /hostedzone/ZXXXXXXXXXXXXX
-
-# Copy just the ID: ZXXXXXXXXXXXXX (without /hostedzone/)
+```bash
+# See docs/alb-https-handoff.md for full steps and parameter reference
+aws cloudformation deploy \
+  --template-file infrastructure/alb-https.yaml \
+  --stack-name secure-employee-directory-alb \
+  --parameter-overrides \
+    VpcId=vpc-xxxxxxxx \
+    PublicSubnet1Id=subnet-xxxxxxxx \
+    PublicSubnet2Id=subnet-yyyyyyyy \
+    Ec2InstanceId=<InstanceId from ec2-iam stack outputs> \
+    Ec2SecurityGroupId=<SecurityGroupId from ec2-iam stack outputs> \
+    DomainName=employees.pcons.me \
+  --region eu-north-1
 ```
 
+### DNS (Namecheap)
+
+After the ALB stack deploys, add one record in Namecheap → Advanced DNS for `pcons.me`:
+
+| Type | Host | Value |
+|------|------|-------|
+| CNAME | `employees` | `<AlbDnsName from stack outputs>` |
+
+See `docs/alb-https-handoff.md` Step 6 for the full walkthrough.
 
 ## Future Improvements
 
-- Add CloudFormation outputs documentation once infrastructure is finalized.
 - Add CI workflow for linting, tests, and Docker build.
-- Wire ALB target-group health checks to `/health/ready` (or `/health/live` for liveness-only).

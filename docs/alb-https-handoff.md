@@ -5,13 +5,32 @@ with an ACM SSL/TLS certificate, provisioned via CloudFormation using
 `infrastructure/alb-https.yaml`.
 
 The ALB terminates TLS on port 443 and forwards plain HTTP to the EC2 instance
-on port 5000. Port 80 on the ALB immediately redirects to HTTPS with a 301 —
-the EC2 instance never handles TLS directly.
+on port 5000. Port 80 on the ALB permanently redirects to HTTPS (301) — the
+EC2 instance never handles TLS.
 
-The Flask app was already built for this setup. `ProxyFix` is enabled when
-`TRUST_PROXY=true`, which restores the real client IP and correct scheme from
-the `X-Forwarded-For` and `X-Forwarded-Proto` headers the ALB injects.
-`/health/ready` is the health check endpoint the ALB polls.
+The app was already built for this. `ProxyFix` is enabled in `app/__init__.py`
+when `TRUST_PROXY=true`, restoring the real client IP and correct scheme from
+`X-Forwarded-For` and `X-Forwarded-Proto` headers the ALB injects.
+`ProductionConfig` sets `TRUST_PROXY=true` by default — do not disable it
+when running behind the ALB. `/health/ready` is the health check endpoint the
+ALB polls.
+
+---
+
+## Feature Summary
+
+| Feature | Status |
+|---------|--------|
+| HTTP → HTTPS Redirect | ✅ |
+| TLS 1.2 / TLS 1.3 | ✅ |
+| ACM Certificate | ✅ |
+| Automatic Certificate Renewal | ✅ |
+| Application Load Balancer | ✅ |
+| Health Checks (`/health/ready`) | ✅ |
+| CloudFormation Managed | ✅ |
+| Multi-AZ Load Balancer | ✅ |
+| Secure EC2 Access via ALB Only | ✅ |
+| External DNS via Namecheap CNAME | ✅ |
 
 ---
 
@@ -27,14 +46,13 @@ infrastructure/alb-https.yaml
 
 | Resource | Type | Purpose |
 |----------|------|---------|
-| `AppCertificate` | `AWS::CertificateManager::Certificate` | ACM SSL/TLS cert for the domain — auto-validated via Route 53 |
-| `AlbSecurityGroup` | `AWS::EC2::SecurityGroup` | Accepts port 80 and 443 from anywhere |
+| `AppCertificate` | `AWS::CertificateManager::Certificate` | ACM SSL/TLS cert for the domain |
+| `AlbSecurityGroup` | `AWS::EC2::SecurityGroup` | Accepts ports 80 and 443 from the internet |
 | `Ec2IngressFromAlb` | `AWS::EC2::SecurityGroupIngress` | Locks EC2 port 5000 to ALB traffic only |
 | `AppLoadBalancer` | `AWS::ElasticLoadBalancingV2::LoadBalancer` | Internet-facing ALB across two AZs |
 | `AppTargetGroup` | `AWS::ElasticLoadBalancingV2::TargetGroup` | Routes traffic to EC2 on port 5000 |
 | `HttpsListener` | `AWS::ElasticLoadBalancingV2::Listener` | HTTPS on 443, TLS terminated with ACM cert |
 | `HttpListener` | `AWS::ElasticLoadBalancingV2::Listener` | HTTP on 80, 301 redirect to HTTPS |
-| `AppAliasRecord` | `AWS::Route53::RecordSet` | (Optional) A record alias pointing domain to ALB |
 
 ---
 
@@ -46,62 +64,79 @@ infrastructure/alb-https.yaml
 | `VpcId` | — | **Yes** | VPC — must match the EC2/IAM stack |
 | `PublicSubnet1Id` | — | **Yes** | First public subnet — ALB needs two AZs |
 | `PublicSubnet2Id` | — | **Yes** | Second public subnet in a different AZ |
-| `Ec2InstanceId` | — | **Yes** | EC2 instance ID from the EC2/IAM stack outputs |
-| `Ec2SecurityGroupId` | — | **Yes** | EC2 security group ID — ALB SG added as inbound source |
-| `DomainName` | — | **Yes** | FQDN for the app (e.g. `employees.yourdomain.com`) |
-| `HostedZoneId` | — | **Yes** | Route 53 hosted zone ID for automated DNS validation |
+| `Ec2InstanceId` | — | **Yes** | From EC2/IAM stack `Outputs.InstanceId` |
+| `Ec2SecurityGroupId` | — | **Yes** | From EC2/IAM stack `Outputs.SecurityGroupId` |
+| `DomainName` | — | **Yes** | FQDN for the app (e.g. `employees.pcons.me`) |
 | `AppPort` | `5000` | No | Flask listen port — must match EC2/IAM stack |
-| `CreateAliasRecord` | `"true"` | No | Whether to create a Route 53 alias record for the domain |
 
 ---
 
 ## How It Works
 
-1. Deploy stack - ACM creates certificate with DomainValidationOptions referencing HostedZoneId
+```
+Browser
+  │
+  ├── HTTP :80  ──► ALB ──► 301 redirect to HTTPS
+  │
+  └── HTTPS :443 ─► ALB (TLS terminated with ACM cert)
+                      │
+                      ▼
+              Target Group
+              health check: GET /health/ready → HTTP 200
+                      │
+                      ▼
+              EC2 Instance :5000 (Flask / Gunicorn)
+              FLASK_ENV=production  TRUST_PROXY=true
+                      │
+                      ▼
+                  DynamoDB (via IAM Instance Profile — no access keys)
+```
 
-2. CloudFormation waits for DNS validation (automatic via Route 53)
+After TLS termination the ALB adds these headers before forwarding to EC2:
 
-3. ACM creates validation CNAME in Route 53
+| Header | Value |
+|--------|-------|
+| `X-Forwarded-For` | Real client IP |
+| `X-Forwarded-Proto` | `https` |
+| `X-Forwarded-Host` | Original `Host` header |
 
-4. ACM validates certificate
-
-5. Stack continues - ALB created with valid certificate
-
-6. Route 53 alias record created pointing to ALB
-
-**Key Benefits:**
-- **Zero manual steps** — no need to add CNAME records manually
-- **Automatic renewal** — ACM auto-renews certificates
-- **Seamless deployment** — stack pauses and resumes automatically
-- **Clean rollback** — validation records are cleaned up on deletion
-- **Faster deployment** — DNS validation typically completes in 2-5 minutes
+`ProxyFix` (configured in `app/__init__.py`) reads these and makes them
+available as `request.remote_addr` and `request.scheme`. `ProductionConfig`
+enables this automatically — `TRUST_PROXY` is `True` by default in production.
 
 ---
 
 ## Security Design
 
 - **EC2 is not directly reachable on port 5000 from the internet** after this
-  stack deploys. The `Ec2IngressFromAlb` resource adds the ALB security group
-  as the only allowed source on the EC2 security group — replacing the open
-  `0.0.0.0/0` rule that was there before.
-- **TLS policy** is set to `ELBSecurityPolicy-TLS13-1-2-2021-06` — enforces
-  TLS 1.2 minimum and prefers TLS 1.3. SSLv3, TLS 1.0, and TLS 1.1 are blocked.
-- **HTTP to HTTPS redirect** uses a 301 — browsers cache it and will not retry HTTP.
-- **ACM certificates are free** and auto-renew before expiry. No manual cert rotation.
-- ACM certificates are free and auto-renew before expiry. No manual cert rotation.
-- Route 53 integration ensures DNS validation is secure and automated.
+  stack deploys. `Ec2IngressFromAlb` adds the ALB security group as the only
+  allowed inbound source on the EC2 security group for the app port. The old
+  `0.0.0.0/0` rule on port 5000 should be removed manually from the EC2 SG
+  once the stack is deployed.
+- **TLS policy** `ELBSecurityPolicy-TLS13-1-2-2021-06` — TLS 1.2 minimum,
+  TLS 1.3 preferred. SSLv3, TLS 1.0, and TLS 1.1 are not accepted.
+- **HTTP → HTTPS redirect** is a 301 — browsers cache it permanently.
+- **ACM certificates are free** and auto-renew before expiry. No manual
+  certificate rotation required.
+- **Name collision prevention** — ALB and target group names use
+  `!Sub "${AWS::StackName}-alb"` and `!Sub "${AWS::StackName}-tg"` so
+  multiple stacks (e.g. staging and production) can coexist without conflicts.
 
 ---
 
-## Stack Deployment Order (full infrastructure)
+## Stack Deployment Order
 
 ```
-1. infrastructure/dynamodb.yaml   -  stack: secure-employee-directory
-2. infrastructure/ec2-iam.yaml    -  stack: secure-employee-directory-app
-3. infrastructure/alb-https.yaml  -  stack: secure-employee-directory-alb
+1. infrastructure/dynamodb.yaml   →  stack: secure-employee-directory
+2. infrastructure/ec2-iam.yaml    →  stack: secure-employee-directory-app
+3. infrastructure/alb-https.yaml  →  stack: secure-employee-directory-alb
 ```
 
-Each stack depends on outputs from the one before it.
+DNS is managed directly in Namecheap — no Route 53 stack needed.
+See Step 6 below for the CNAME record to add.
+
+Each stack depends on outputs from the one before it. Do not deploy the ALB
+stack before the EC2/IAM stack is in `CREATE_COMPLETE`.
 
 ---
 
@@ -109,17 +144,13 @@ Each stack depends on outputs from the one before it.
 
 ### Prerequisites
 
-Before deploying this stack:
-
-1. **The EC2/IAM stack must already be deployed** — you need the instance ID
-   and security group ID from its outputs.
-2. **You must have a domain in Route 53** — the hosted zone ID is required for
-   automated certificate validation. The domain's NS records must point to
-   Route 53's name servers.
-3. **The VPC must have two public subnets in different AZs** — the ALB requires
-   multi-AZ placement. If you only have one public subnet, create a second one
-   in a different AZ inside the same VPC before proceeding.
-4. **AWS CLI / CloudShell open in `eu-north-1`** with `alb-https.yaml` available.
+1. **EC2/IAM stack must already be deployed** and in `CREATE_COMPLETE`.
+   You need `InstanceId` and `SecurityGroupId` from its outputs.
+2. **You must own a domain.** ACM validates via a DNS CNAME — you need access
+   to your DNS provider (Route 53, Cloudflare, Namecheap, etc.).
+3. **The VPC must have two public subnets in different AZs.** If you only have
+   one, create a second in a different AZ inside the same VPC first.
+4. **AWS CLI or CloudShell open in `eu-north-1`** with the repo checked out.
 
 ---
 
@@ -128,26 +159,26 @@ Before deploying this stack:
 ```bash
 aws cloudformation describe-stacks \
   --stack-name secure-employee-directory-app \
-  --query "Stacks[0].Outputs[?OutputKey=='InstanceId' || OutputKey=='SecurityGroupId'].[OutputKey,OutputValue]" \
-  --output table \
-  --region eu-north-1
+  --region eu-north-1 \
+  --query "Stacks[0].Outputs" \
+  --output table
 ```
 
-Note down the values for `InstanceId` and `SecurityGroupId`.
+Note `InstanceId` and `SecurityGroupId`.
 
 ---
 
-### Step 2 — Get your VPC and public subnet IDs
+### Step 2 — Get VPC and public subnet IDs
 
 ```bash
-# Default VPC ID
+# Default VPC
 aws ec2 describe-vpcs \
   --filters Name=isDefault,Values=true \
   --query "Vpcs[0].VpcId" \
   --output text \
   --region eu-north-1
 
-# All subnets in that VPC — pick two from different AZs
+# All subnets in that VPC — pick two with different AZs
 aws ec2 describe-subnets \
   --filters Name=vpc-id,Values=<VpcId> \
   --query "Subnets[*].[SubnetId,AvailabilityZone,MapPublicIpOnLaunch]" \
@@ -160,24 +191,6 @@ Pick two subnets where `MapPublicIpOnLaunch` is `True` and the AZ values differ
 
 ---
 
-### Step 3 — Get your Route 53 Hosted Zone ID
-
-```bash
-# List all hosted zones
-aws route53 list-hosted-zones \
-  --query "HostedZones[*].[Name,Id]" \
-  --output table \
-  --region eu-north-1
-
-# Or get specific zone ID (replace with your domain)
-aws route53 list-hosted-zones \
-  --query "HostedZones[?Name=='yourdomain.com.'].Id" \
-  --output text \
-  --region eu-north-1
-```
-
-The hosted zone ID will look like: /hostedzone/ZXXXXXXXXXXXXX
-
 ### Step 3 — Deploy the stack
 
 ```bash
@@ -185,69 +198,105 @@ aws cloudformation deploy \
   --template-file infrastructure/alb-https.yaml \
   --stack-name secure-employee-directory-alb \
   --parameter-overrides \
-      Environment=production \
-      VpcId=<VpcId> \
-      PublicSubnet1Id=<SubnetId-AZ1> \
-      PublicSubnet2Id=<SubnetId-AZ2> \
-      Ec2InstanceId=<InstanceId> \
-      Ec2SecurityGroupId=<SecurityGroupId> \
-      DomainName=employees.yourdomain.com \
-      HostedZoneId=<HostedZoneId> \
-      CreateAliasRecord=true \
+    Environment=production \
+    VpcId=<VpcId> \
+    PublicSubnet1Id=<SubnetId-AZ1> \
+    PublicSubnet2Id=<SubnetId-AZ2> \
+    Ec2InstanceId=<InstanceId> \
+    Ec2SecurityGroupId=<SecurityGroupId> \
+    DomainName=employees.pcons.me \
   --region eu-north-1
 ```
-What happens next:
 
-- The stack creates the ACM certificate
-- CloudFormation automatically adds validation CNAME records to Route 53
-- ACM validates the certificate (typically 2-5 minutes)
-- The stack continues and creates all remaining resources
-- An alias record is created pointing your domain to the ALB
-- The stack will pause at CREATE_IN_PROGRESS on the AppCertificate resource (this is expected and automatic. No manual intervention is needed)
+No `--capabilities` flag is needed — this stack creates no IAM resources.
+
+The stack will pause at `CREATE_IN_PROGRESS` on `AppCertificate`. This is
+expected. Proceed to Step 4 while it waits.
 
 ---
 
+### Step 4 — Complete ACM DNS validation
 
-### Step 5 - Monitor deployment progress (optional)
+While the stack is waiting:
 
-You can watch the progress in the AWS Console or via CLI:
+1. Open **AWS Console → Certificate Manager → Certificates**
+2. Click the certificate for your domain
+3. Under **Domains**, expand the domain row — you will see a **CNAME name**
+   and a **CNAME value**
+4. Add that CNAME to your DNS provider
 
-```bash
-# Monitor stack events
-aws cloudformation describe-stack-events \
-  --stack-name secure-employee-directory-alb \
-  --region eu-north-1 \
-  --query "StackEvents[*].[ResourceStatus,ResourceType,LogicalResourceId,ResourceStatusReason]" \
-  --output table
+Propagation times:
 
-# Check certificate validation status (if you have the ARN)
-aws acm describe-certificate \
-  --certificate-arn <certificate-arn-from-stack> \
-  --region eu-north-1 \
-  --query "Certificate.DomainValidationOptions[0].ValidationStatus"
-```
+- **Route 53** — typically 2–5 minutes
+- **Cloudflare** — typically 5–10 minutes
+- **Other providers** — up to 30 minutes
+
+Once ACM validates the certificate, the stack continues to completion.
+
 ---
 
-### Step 6 — Verify the deployment
-
-After the stack reaches `CREATE_COMPLETE`:
+### Step 5 — Get the ALB DNS name
 
 ```bash
-# Get the ALB DNS name
 aws cloudformation describe-stacks \
   --stack-name secure-employee-directory-alb \
-  --query "Stacks[0].Outputs[?OutputKey=='AlbDnsName' || OutputKey=='HttpsUrl'].[OutputKey,OutputValue]" \
-  --output table \
+  --region eu-north-1 \
+  --query "Stacks[0].Outputs" \
+  --output table
+```
+
+Note `AlbDnsName` — it looks like:
+
+```
+secure-employee-directory-alb-123456789.eu-north-1.elb.amazonaws.com
+```
+
+---
+
+### Step 6 — Add a CNAME record in Namecheap
+
+1. Log into Namecheap → **Domain List** → click **Manage** next to `pcons.me`
+2. Go to **Advanced DNS**
+3. Add a new record:
+
+| Type | Host | Value | TTL |
+|------|------|-------|-----|
+| CNAME | `employees` | `<AlbDnsName>` | Automatic |
+
+Replace `<AlbDnsName>` with the value from Step 5.
+Namecheap typically propagates within 1–5 minutes.
+
+---
+
+### Step 7 — Remove the old EC2 port 5000 inbound rule
+
+After the ALB stack deploys, the EC2 security group has two inbound rules for
+port 5000: the original `0.0.0.0/0` rule and the new ALB-only rule added by
+`Ec2IngressFromAlb`. Remove the old one to fully lock down direct access:
+
+```bash
+aws ec2 revoke-security-group-ingress \
+  --group-id <SecurityGroupId> \
+  --protocol tcp \
+  --port 5000 \
+  --cidr 0.0.0.0/0 \
   --region eu-north-1
+```
 
-# Test HTTPS — should return 200 and the health payload
-curl https://employees.yourdomain.com/health/ready
+---
 
-# Test HTTP — should return 301 redirect to HTTPS
-curl -I http://employees.yourdomain.com
+### Step 8 — Verify
+
+```bash
+# HTTPS — should return 200 and the health payload
+curl https://employees.pcons.me/health/ready
+
+# HTTP — should return 301 redirect to HTTPS
+curl -I http://employees.pcons.me
 ```
 
 Expected `/health/ready` response:
+
 ```json
 {
   "status": "healthy",
@@ -258,65 +307,11 @@ Expected `/health/ready` response:
 }
 ```
 
-Expected HTTP redirect response headers:
-```text
+Expected HTTP redirect headers:
+
+```
 HTTP/1.1 301 Moved Permanently
-Location: https://employees.yourdomain.com/
-```
-
----
-
-## Advanced Configuration
-### Disable Alias Record Creation
-If you want to manage DNS records yourself (e.g., for split DNS or multi-region):
-
-```bash
-aws cloudformation deploy \
-  --template-file infrastructure/alb-https.yaml \
-  --stack-name secure-employee-directory-alb \
-  --parameter-overrides \
-      ...other parameters... \
-      CreateAliasRecord=false \
-  --region eu-north-1
-```
-
-Then manually create a CNAME or alias record pointing to the ALB DNS name.
-
-## Use with External DNS Providers (Non-Route 53)
-If you're using Cloudflare, Namecheap, GoDaddy, etc.:
-
-- You must manually handle DNS validation — ACM won't auto-validate
-- Deploy with CreateAliasRecord=false
-- The stack will pause at certificate creation
-- Go to ACM Console and get the CNAME name and value
-- Add the CNAME record in your DNS provider
-- Wait for validation (up to 30 minutes)
-- Stack will continue
-- Create a CNAME record pointing your domain to the ALB DNS name
-
-**Note:** This approach requires manual steps and hence we would prefer Route 53 which is recommended.
-
-## Multi-Region Deployment
-For multi-region deployments:
-
-- Deploy the ALB stack in each region with CreateAliasRecord=false
-- Use Route 53 routing policies (weighted, latency-based, or geolocation)
-- Create health checks for each ALB
-- Configure Route 53 records with failover or weighted routing
-
-Example for two regions:
-
-```bash
-# Region 1 (Primary)
-aws cloudformation deploy ... --region eu-north-1 \
-  --parameter-overrides CreateAliasRecord=false ...
-
-# Region 2 (Secondary)
-aws cloudformation deploy ... --region eu-west-1 \
-  --parameter-overrides CreateAliasRecord=false ...
-
-# Configure Route 53 with weighted records
-aws route53 change-resource-record-sets ... --region eu-north-1
+Location: https://employees.pcons.me/
 ```
 
 ---
@@ -332,7 +327,6 @@ aws route53 change-resource-record-sets ... --region eu-north-1
 | `CertificateArn` | ACM certificate ARN |
 | `HttpsUrl` | Final HTTPS URL for the app |
 | `AlbSecurityGroupId` | ALB security group ID |
-| `DomainValidationStatus` |	Status of certificate domain validation |
 
 ---
 
@@ -340,30 +334,30 @@ aws route53 change-resource-record-sets ... --region eu-north-1
 
 | Symptom | What to check |
 |---------|---------------|
-| Stack stuck at `CREATE_IN_PROGRESS` on `AppCertificate` | DNS validation CNAME not added yet — check ACM Console |
-| `Target.FailedHealthChecks` in the target group | EC2 bootstrap still running — wait 3–5 min after `CREATE_COMPLETE` |
-| Browser shows `ERR_SSL_PROTOCOL_ERROR` | Certificate not yet validated — check ACM Console status |
-| `curl https://...` returns connection refused | DNS not propagated yet — test directly: `curl https://<AlbDnsName>` |
-| App returns `502 Bad Gateway` | Flask not running on EC2 — SSH in and run `systemctl status secure-employee-directory` |
-| Direct EC2 IP on port 5000 still reachable | The old `0.0.0.0/0` inbound rule on the EC2 SG still exists which is to be removed manually |
-| Alias record not created	| Check if CreateAliasRecord=true was passed in parameters |
-| Domain not resolving to ALB	| Verify the alias record exists in Route 53; check NS records for the domain |
-| Target.FailedHealthChecks in target group |	EC2 bootstrap still running — wait 3-5 min after `CREATE_COMPLETE` |
-| ERR_SSL_PROTOCOL_ERROR in browser |	Certificate not yet validated — check ACM Console status |
-| Route 53 validation records missing |	CloudFormation might not have permissions to create records — check IAM permissions |
-| Hosted zone ID format error	|| Must be just the ID (e.g., ZXXXXXXXXXXXXX) without /hostedzone/ prefix |
+| Stack stuck on `AppCertificate` | DNS CNAME not added yet — check ACM Console → Certificates |
+| `Target.FailedHealthChecks` | EC2 UserData still running — wait 3–5 min after `CREATE_COMPLETE`, then check `systemctl status secure-employee-directory` |
+| `ERR_SSL_PROTOCOL_ERROR` | ACM certificate not yet validated — check ACM Console |
+| `curl https://...` connection refused | DNS not propagated — test with the ALB DNS directly: `curl https://<AlbDnsName>` |
+| `502 Bad Gateway` | Flask not running on EC2 — SSH in and run `systemctl status secure-employee-directory` and `sudo cat /var/log/secure-employee-directory-bootstrap.log` |
+| EC2 port 5000 still reachable directly | Old `0.0.0.0/0` inbound rule not removed yet — see Step 7 |
+| `request.scheme` returns `http` over HTTPS | `TRUST_PROXY` is not `true` — check `FLASK_ENV=production` is set in the systemd service |
 
 ---
 
-## Cleanup
-Delete the stack to remove all resources including Route 53 records:
+## Notes
 
-```bash
-aws cloudformation delete-stack \
-  --stack-name secure-employee-directory-alb \
-  --region eu-north-1
-```
-
-Note: The ACM certificate will be automatically deleted when the stack is deleted,
-and the DNS validation records will be cleaned up. The Route 53 alias record will
-also be removed if it was created by the stack.
+- ACM certificates in `eu-north-1` are **regional**. If you add CloudFront
+  later, you will need a **second certificate in `us-east-1`** — CloudFront
+  only accepts certs from `us-east-1`.
+- The ALB health check uses `/health/ready`. This returns `503` when DynamoDB
+  is unreachable, which correctly pulls the instance out of rotation. Use
+  `/health/live` for a process-only liveness probe.
+- `TRUST_PROXY=true` is set by `ProductionConfig` automatically. Do not
+  disable it when running behind the ALB.
+- ALB and target group names use `!Sub "${AWS::StackName}-alb"` /
+  `!Sub "${AWS::StackName}-tg"` — deploying a second stack (e.g.
+  `secure-employee-directory-alb-staging`) will not collide with the
+  production stack.
+- The `Ec2IngressFromAlb` resource **adds** an ingress rule to the existing
+  EC2 security group. It does not remove the old `0.0.0.0/0` rule — that must
+  be done manually (Step 7).
